@@ -7,7 +7,6 @@
 ## 1. 安裝
 
 ```bash
-cd pdf2lesson-video-tw
 pip install -e .
 # 想用真實 LLM / 線上 TTS:
 pip install -e ".[anthropic,edge]"

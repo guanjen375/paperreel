@@ -20,8 +20,8 @@ venv/
 htmlcov/
 
 # pdf2lesson generated artefacts (per-project run dirs)
-pdf2lesson-video-tw/runs/
-pdf2lesson-video-tw/examples/tiny_sample/tiny.pdf
+runs/
+examples/tiny_sample/tiny.pdf
 
 # OS junk
 .DS_Store
