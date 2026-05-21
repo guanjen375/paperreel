@@ -1,0 +1,13 @@
+<!doctype html>
+<!-- Optional Playwright template; the MVP uses card_renderer.py (Pillow) instead. -->
+<html lang="zh-TW"><head><meta charset="utf-8"/>
+<style>
+  html,body{margin:0;height:100%;font-family:"Noto Sans CJK TC","PingFang TC","Microsoft JhengHei",sans-serif;background:#0F172A;color:#F8FAFC}
+  .root{display:flex;flex-direction:column;justify-content:center;height:100vh;padding:0 6vw}
+  .bar{width:14px;height:18vh;background:#22D3EE;margin-bottom:24px}
+  h1{font-size:9vh;margin:0;line-height:1.1}
+  .sub{margin-top:2vh;color:#22D3EE;font-size:3.2vh}
+  .footer{position:fixed;bottom:0;left:0;right:0;background:#000;color:#aaa;font-size:2vh;padding:1.4vh 2vw}
+</style></head>
+<body><div class="root"><div class="bar"></div><h1>{{title}}</h1><div class="sub">{{subtitle}}</div></div>
+<div class="footer">{{footer}}</div></body></html>

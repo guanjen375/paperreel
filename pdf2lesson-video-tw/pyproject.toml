@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2lesson-video-tw"
+version = "0.1.0"
+description = "PDF -> 繁體中文教學影片 (NotebookLM-style) pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "pdf2lesson team" }]
+license = { text = "MIT" }
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "pymupdf>=1.24",
+    "Pillow>=10.0",
+    "PyYAML>=6.0",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+edge = ["edge-tts>=6.1"]
+playwright = ["playwright>=1.43"]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+pdf2lesson = "pdf2lesson.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"pdf2lesson.renderers" = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

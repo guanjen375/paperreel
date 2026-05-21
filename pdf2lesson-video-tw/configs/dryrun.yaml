@@ -1,0 +1,18 @@
+# Dry-run / 7800XT 開發機: 全部 mock, 不需要 GPU 或網路
+llm:
+  provider: "mock"
+
+tts:
+  provider: "mock"
+  sample_rate_hz: 24000   # 較小檔案加快測試
+
+image:
+  provider: "mock"
+
+renderer:
+  resolution: [1280, 720]
+  fps: 24
+
+runtime:
+  max_hours: 0.5
+  parallelism: 1

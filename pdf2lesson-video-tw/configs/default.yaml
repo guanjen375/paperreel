@@ -1,0 +1,71 @@
+# pdf2lesson default config — 適用所有環境的安全基線
+project:
+  name: "pdf2lesson-run"
+  language: "zh-TW"
+
+duration:
+  # 中文旁白速度 (字/分鐘)
+  speech_chars_per_minute: 240
+  # 每個 scene 的目標秒數 (lower, upper)
+  scene_seconds_min: 30
+  scene_seconds_max: 90
+  # 每幾分鐘插入 recap
+  recap_every_minutes: 8
+  # 預估字元 -> 目標分鐘的除數 (對應 ~2200 字 / 分鐘的閱讀密度)
+  auto_chars_per_minute: 2200
+  auto_minutes_min: 12
+  auto_minutes_max: 120
+
+ingest:
+  extract_images: true
+  min_image_pixels: 40000   # 過濾極小裝飾圖
+  image_format: "png"
+  ocr_fallback: false       # 第一版不做 OCR
+
+llm:
+  provider: "mock"          # mock | anthropic
+  model: "claude-opus-4-7"
+  max_chunk_chars: 8000
+  hierarchical_levels: 2
+  temperature: 0.4
+  use_pdf_images: true      # 是否引用原 PDF 圖片
+  forbid_verbatim_copy: true
+  max_verbatim_run_chars: 40
+
+tts:
+  provider: "mock"          # mock | edge
+  voice: "zh-TW-HsiaoChenNeural"
+  sample_rate_hz: 48000
+  format: "wav"
+  speaking_rate: 1.0
+
+image:
+  provider: "mock"          # mock | (future) sdxl/flux
+
+renderer:
+  resolution: [1920, 1080]
+  fps: 30
+  video_codec: "libx264"
+  audio_codec: "aac"
+  pixel_format: "yuv420p"
+  background_color: "#0F172A"
+  text_color: "#F8FAFC"
+  accent_color: "#22D3EE"
+  font_path: null            # null 表示讓 Pillow 用預設;  填入 .ttf 路徑可換字
+  ken_burns: true
+  ffmpeg_binary: "ffmpeg"
+  ffprobe_binary: "ffprobe"
+
+subtitles:
+  formats: ["srt", "ass"]
+  max_chars_per_line: 22
+  max_lines_per_cue: 2
+
+quality:
+  duration_tolerance_pct: 8.0
+  warn_verbatim_pct: 5.0     # 講稿與 PDF 原文重疊比例上限
+
+runtime:
+  max_hours: 10.0
+  scene_retry_max: 2
+  parallelism: 1             # 第一版採序列, 簡化續跑

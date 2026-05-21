@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-TW"><head><meta charset="utf-8"/>
+<style>
+  html,body{margin:0;height:100%;font-family:"Noto Sans CJK TC","PingFang TC","Microsoft JhengHei",sans-serif;background:#0F172A;color:#F8FAFC}
+  .root{padding:5vh 6vw}
+  .badge{display:inline-block;padding:0.6vh 1.4vw;border:2px solid #22D3EE;color:#22D3EE;font-size:2.6vh;border-radius:999px}
+  h1{font-size:6vh;margin:1vh 0 3vh 0}
+  ul{font-size:3.2vh;line-height:1.55;padding-left:3vw;margin:0}
+  li{margin-bottom:1.4vh}
+  .footer{position:fixed;bottom:0;left:0;right:0;background:#000;color:#aaa;font-size:2vh;padding:1.4vh 2vw}
+</style></head>
+<body><div class="root"><span class="badge">RECAP · 重點回顧</span><h1>{{title}}</h1>
+<ul>{{#bullets}}<li>{{.}}</li>{{/bullets}}</ul></div>
+<div class="footer">{{footer}}</div></body></html>
