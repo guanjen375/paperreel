@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pdf2lesson.utils.duration import (estimate_scene_seconds,
+from paperreel.utils.duration import (estimate_scene_seconds,
                                        estimate_target_minutes,
                                        should_insert_recap,
                                        split_chars_per_scene)

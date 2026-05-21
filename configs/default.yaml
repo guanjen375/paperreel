@@ -1,6 +1,6 @@
-# pdf2lesson default config — 適用所有環境的安全基線
+# paperreel default config — 適用所有環境的安全基線
 project:
-  name: "pdf2lesson-run"
+  name: "paperreel-run"
   language: "zh-TW"
 
 duration:

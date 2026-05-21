@@ -1,6 +1,6 @@
 """Edge TTS provider — optional, falls back to MockTTS when unavailable.
 
-Requires the `edge-tts` extra: pip install pdf2lesson-video-tw[edge]
+Requires the `edge-tts` extra: pip install paperreel[edge]
 Outputs WAV via ffmpeg post-processing (edge-tts produces mp3 by default).
 """
 from __future__ import annotations

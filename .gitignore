@@ -19,7 +19,7 @@ venv/
 .coverage
 htmlcov/
 
-# pdf2lesson generated artefacts (per-project run dirs)
+# paperreel generated artefacts (per-project run dirs)
 runs/
 examples/tiny_sample/tiny.pdf
 

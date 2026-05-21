@@ -1,4 +1,4 @@
-# pdf2lesson-video-tw
+# paperreel
 
 把任意 PDF 轉成繁體中文教學影片 (MP4 + SRT/ASS)。
 
@@ -24,7 +24,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 真實 LLM 才需要
 ## 2. 產生影片（一條指令）
 
 ```bash
-pdf2lesson all ./your_book.pdf \
+paperreel all ./your_book.pdf \
     --project ./runs/my_video \
     --target-minutes auto \
     --max-hours 10 \
@@ -56,15 +56,15 @@ pdf2lesson all ./your_book.pdf \
 ## 4. 出錯怎麼辦
 
 ```bash
-pdf2lesson status        --project ./runs/my_video      # 看每個 stage 狀態
-pdf2lesson retry-failed  --project ./runs/my_video      # 重做標 failed 的 scene
-pdf2lesson all ./your_book.pdf --project ./runs/my_video --resume   # 繼續跑
+paperreel status        --project ./runs/my_video      # 看每個 stage 狀態
+paperreel retry-failed  --project ./runs/my_video      # 重做標 failed 的 scene
+paperreel all ./your_book.pdf --project ./runs/my_video --resume   # 繼續跑
 ```
 
 只想重做某幾個 stage：
 
 ```bash
-pdf2lesson all ./your_book.pdf --project ./runs/my_video \
+paperreel all ./your_book.pdf --project ./runs/my_video \
     --force-stage plan,script,scenes --resume
 ```
 

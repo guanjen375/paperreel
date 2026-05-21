@@ -22,7 +22,7 @@ doc.save(p)
 print("wrote", p)
 PY
 
-pdf2lesson all examples/tiny_sample/tiny.pdf \
+paperreel all examples/tiny_sample/tiny.pdf \
     --project ./runs/tiny --dry-run --skip-render
 ```
 

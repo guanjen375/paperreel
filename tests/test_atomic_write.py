@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pdf2lesson.io_utils import (atomic_write, atomic_write_json,
+from paperreel.io_utils import (atomic_write, atomic_write_json,
                                  atomic_write_text, read_json)
 
 

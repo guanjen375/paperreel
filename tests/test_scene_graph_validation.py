@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pdf2lesson.config import load_config
-from pdf2lesson.io_utils import read_json
-from pdf2lesson.models import SceneGraph, VisualType
-from pdf2lesson.stages import (build_outline, build_scene_graph, ingest_pdf,
+from paperreel.config import load_config
+from paperreel.io_utils import read_json
+from paperreel.models import SceneGraph, VisualType
+from paperreel.stages import (build_outline, build_scene_graph, ingest_pdf,
                                write_script)
-from pdf2lesson.state import StateDB
+from paperreel.state import StateDB
 
 
 def _drive_to_scenegraph(project_dir: Path, pdf: Path) -> SceneGraph:

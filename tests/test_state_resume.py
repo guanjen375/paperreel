@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pdf2lesson.config import load_config
-from pdf2lesson.hashing import hash_inputs
-from pdf2lesson.stages import (build_outline, build_scene_graph,
+from paperreel.config import load_config
+from paperreel.hashing import hash_inputs
+from paperreel.stages import (build_outline, build_scene_graph,
                                ingest_pdf, render_visuals,
                                synthesize_audio, write_script)
-from pdf2lesson.state import StateDB
+from paperreel.state import StateDB
 
 
 def test_stage_is_done_requires_output_file(project_dir: Path) -> None:

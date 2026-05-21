@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from pdf2lesson.models import (Scene, SceneGraph, SceneStatus, ScriptScene,
+from paperreel.models import (Scene, SceneGraph, SceneStatus, ScriptScene,
                                VisualType)
 
 

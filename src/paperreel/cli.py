@@ -271,7 +271,7 @@ def run_all(
 
     if shutil.which(cfg.get("renderer", {}).get("ffmpeg_binary", "ffmpeg")) is None:
         console.print("[yellow]! ffmpeg not on PATH — segments/concat/quality skipped.[/yellow]")
-        console.print("  install ffmpeg then re-run: pdf2lesson render --project " + str(p["root"]))
+        console.print("  install ffmpeg then re-run: paperreel render --project " + str(p["root"]))
         return
 
     render_segments.run(project_root=p["root"], db=db, config=cfg, resume=resume)
