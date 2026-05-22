@@ -41,7 +41,7 @@ pip install -e ".[edge]"
 裝好之後：
 
 1. 在自訂 config (或直接改 `configs/default.yaml`) 把 `llm.provider` / `tts.provider` 從 `mock` 改成對應名稱 (如 `anthropic` / `edge`)。
-2. 把該 provider 需要的 API key 設成環境變數 (例如 `ANTHROPIC_API_KEY`)，見下方「設定 API key」。
+2. 把該 provider 需要的 API key 設成環境變數 (例如 `PAPERREEL_ANTHROPIC_API_KEY`)，見下方「設定 API key」。
 
 沒裝套件或沒設 key 時會自動 fallback 回 mock，不會中斷 pipeline。
 
@@ -53,25 +53,27 @@ pip install -e ".[edge]"
 - **anthropic (Claude)** — 到 `console.anthropic.com` → **API Keys** → **Create Key**，會拿到一串 `sk-ant-...`。
 - 自接其他 provider — 依該服務官網申請。
 
+> **⚠️ 跟 Claude Code 訂閱的衝突**：如果你也在用 Claude Code (Pro / Max 訂閱)，**不要** 把 key 設成 `ANTHROPIC_API_KEY`。Claude Code 一旦偵測到這個變數，會自動切成「按 token 計費」走 API，繞過你的訂閱。paperreel 因此優先讀專案專屬的 `PAPERREEL_ANTHROPIC_API_KEY`，找不到才 fallback 到 `ANTHROPIC_API_KEY`。下面範例都用前者。
+
 拿到 key 後設成環境變數 (把 `<your-key>` 換成實際 key)：
 
 ```bash
 # macOS / Linux (bash 或 zsh)
-export ANTHROPIC_API_KEY=<your-key>                                        # 本次 shell 有效
-echo 'export ANTHROPIC_API_KEY=<your-key>' >> ~/.zshrc                     # 永久 (bash 改 ~/.bashrc)
+export PAPERREEL_ANTHROPIC_API_KEY=<your-key>                                        # 本次 shell 有效
+echo 'export PAPERREEL_ANTHROPIC_API_KEY=<your-key>' >> ~/.zshrc                     # 永久 (bash 改 ~/.bashrc)
 ```
 
 ```powershell
 # Windows PowerShell
-$env:ANTHROPIC_API_KEY = "<your-key>"                                      # 本次視窗有效
-[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","<your-key>","User")   # 永久 (重開終端機後生效)
+$env:PAPERREEL_ANTHROPIC_API_KEY = "<your-key>"                                      # 本次視窗有效
+[Environment]::SetEnvironmentVariable("PAPERREEL_ANTHROPIC_API_KEY","<your-key>","User")   # 永久 (重開終端機後生效)
 ```
 
 驗證：
 
 ```bash
-echo $ANTHROPIC_API_KEY        # macOS / Linux
-$env:ANTHROPIC_API_KEY         # PowerShell
+echo $PAPERREEL_ANTHROPIC_API_KEY        # macOS / Linux
+$env:PAPERREEL_ANTHROPIC_API_KEY         # PowerShell
 ```
 
 > **⚠️ 安全提醒**：API key 等同密碼。不要 commit 進 git、不要貼到聊天 / issue / 截圖。若不慎外洩，立刻到該 provider 後台 revoke 並重新申請。

@@ -1,5 +1,10 @@
 """Anthropic provider stub. Activated when llm.provider=='anthropic' AND the
-`anthropic` extra is installed AND ANTHROPIC_API_KEY is set.
+`anthropic` extra is installed AND a key is set in either
+PAPERREEL_ANTHROPIC_API_KEY (preferred) or ANTHROPIC_API_KEY.
+
+The project-specific name is preferred so users can keep paperreel's API key
+isolated from ANTHROPIC_API_KEY, which Claude Code uses to switch from
+Pro/Max subscription billing to pay-per-token API billing.
 
 This is intentionally minimal in the MVP: it sends the same prompt shape that
 the MockLLM understands and falls back to MockLLM if any precondition fails.
@@ -38,13 +43,14 @@ class AnthropicLLM(LLMProvider):
     def _ensure_client(self) -> Any | None:
         if self._client is not None:
             return self._client
-        if "ANTHROPIC_API_KEY" not in os.environ:
+        api_key = os.environ.get("PAPERREEL_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
             return None
         try:
             import anthropic  # type: ignore
         except ImportError:
             return None
-        self._client = anthropic.Anthropic()
+        self._client = anthropic.Anthropic(api_key=api_key)
         return self._client
 
     # ---------- private helpers ----------
