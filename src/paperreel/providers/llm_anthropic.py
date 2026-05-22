@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any
 
 from .llm_base import LLMProvider
@@ -38,17 +39,26 @@ class AnthropicLLM(LLMProvider):
         self._client: Any | None = None
         self._fallback = MockLLM(cfg)
         self.model = self.cfg.get("model", "claude-opus-4-7")
-        self.temperature = float(self.cfg.get("temperature", 0.4))
+        self._init_failed_reason: str | None = None
+
+    def _warn(self, reason: str) -> None:
+        print(f"[paperreel:anthropic] falling back to mock — {reason}", file=sys.stderr)
 
     def _ensure_client(self) -> Any | None:
         if self._client is not None:
             return self._client
+        if self._init_failed_reason:
+            return None
         api_key = os.environ.get("PAPERREEL_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
+            self._init_failed_reason = "no API key (set PAPERREEL_ANTHROPIC_API_KEY)"
+            self._warn(self._init_failed_reason)
             return None
         try:
             import anthropic  # type: ignore
         except ImportError:
+            self._init_failed_reason = "anthropic package not installed (pip install -e \".[anthropic]\")"
+            self._warn(self._init_failed_reason)
             return None
         self._client = anthropic.Anthropic(api_key=api_key)
         return self._client
@@ -63,7 +73,6 @@ class AnthropicLLM(LLMProvider):
             msg = client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
-                temperature=self.temperature,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_prompt}],
             )
@@ -76,7 +85,8 @@ class AnthropicLLM(LLMProvider):
                 if text.lstrip().lower().startswith("json"):
                     text = text.split("\n", 1)[1] if "\n" in text else text
             return json.loads(text)
-        except Exception:
+        except Exception as e:
+            self._warn(f"{type(e).__name__}: {e}")
             return None
 
     # ---------- interface ----------

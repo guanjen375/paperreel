@@ -8,6 +8,16 @@ import time
 from pathlib import Path
 from typing import Optional
 
+if sys.platform == "win32":
+    # Rich prints non-ASCII glyphs (✓ ✗ 繁中) that crash on legacy cp* code-page
+    # consoles (e.g. PowerShell 5.1 with cp950). Force the IO streams to UTF-8
+    # so writes don't raise UnicodeEncodeError mid-pipeline.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
+
 import typer
 from rich.console import Console
 from rich.table import Table

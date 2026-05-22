@@ -23,17 +23,16 @@ ingest:
   ocr_fallback: false       # 第一版不做 OCR
 
 llm:
-  provider: "mock"          # mock | anthropic
+  provider: "anthropic"     # mock | anthropic
   model: "claude-opus-4-7"
   max_chunk_chars: 8000
   hierarchical_levels: 2
-  temperature: 0.4
   use_pdf_images: true      # 是否引用原 PDF 圖片
   forbid_verbatim_copy: true
   max_verbatim_run_chars: 40
 
 tts:
-  provider: "mock"          # mock | edge
+  provider: "edge"          # mock | edge
   voice: "zh-TW-HsiaoChenNeural"
   sample_rate_hz: 48000
   format: "wav"
