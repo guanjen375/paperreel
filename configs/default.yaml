@@ -24,7 +24,7 @@ ingest:
 
 llm:
   provider: "anthropic"     # mock | anthropic
-  model: "claude-opus-4-7"
+  model: "claude-sonnet-4-6"
   max_chunk_chars: 8000
   hierarchical_levels: 2
   use_pdf_images: true      # 是否引用原 PDF 圖片

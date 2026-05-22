@@ -80,6 +80,13 @@ $env:PAPERREEL_ANTHROPIC_API_KEY         # PowerShell
 
 想接其他 provider：實作 `src/paperreel/providers/llm_base.py` 或 `tts_base.py` 的介面，再到對應 `make_*_provider()` 加分支即可。
 
+### 換模型 / 估算成本
+
+- 要換 LLM 模型，改 `configs/default.yaml` 裡的 `llm.model` 即可。
+- Anthropic 的可用型號、定價、推薦用途會持續更新——**請以 [Anthropic 官方文件](https://docs.anthropic.com/en/docs/about-claude/models) 為準**；本 README 刻意不寫死特定型號名稱以免過時。一般而言 Claude 家族「能力越高、單價越貴」是正比關係，預設選的是中階兼顧成本與品質的型號。
+- 每跑一份 PDF 約打 `chunks + chapters + 1` 次 LLM call。1 頁的小 PDF 約 6 通；100 頁的書可能 30 通以上，實際費用看選的模型。
+- 試水溫不想花錢：`paperreel all ... --dry-run` 強制全 mock，不需 key、不打 API。
+
 ---
 
 ## 3. 產生影片（一條指令）
