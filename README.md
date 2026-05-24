@@ -89,7 +89,7 @@ ollama 透過 curl 安裝腳本起的 systemd 服務常常在開機時 NVIDIA dr
 
 **預設就能跑** — 上面那行 `ollama pull qwen2.5:14b-instruct` 拉完直接跳到 §3 開工，不用碰 config。
 
-要換模型 (例如 RTX 5090 想吃 70B)，**改 `src/paperreel/configs/default.yaml` 的 `llm.model`**，然後 `ollama pull` 你填的那個：
+要換模型 (例如有 24 GB+ VRAM 想吃 70B)，**改 `src/paperreel/configs/default.yaml` 的 `llm.model`**，然後 `ollama pull` 你填的那個：
 
 ```yaml
 # src/paperreel/configs/default.yaml
@@ -97,7 +97,7 @@ llm:
   model: "llama3.3:70b-instruct"   # 改完記得 ollama pull llama3.3:70b-instruct
 ```
 
-> 附註：同目錄下有個 `rtx5090.yaml` overlay (用 `--config rtx5090` 套用)，會把 LLM 強制換成 `llama3.3:70b-instruct` 並把 TTS/SDXL device 設成 `cuda`。**用之前一定要先 `ollama pull llama3.3:70b-instruct`** (~43 GB),否則第一個 LLM 呼叫就 404。內建 overlays 都是執行時透過 `importlib.resources` 載入,不需要 repo checkout 存在。
+> 附註：同目錄下有個 `bigvram.yaml` overlay (用 `--config bigvram` 套用),給 24 GB+ VRAM 的 NVIDIA 機器用 — 會把 LLM 換成 `llama3.3:70b-instruct`、SDXL 強制走 CUDA、scene 平行度開到 4。**用之前一定要先 `ollama pull llama3.3:70b-instruct`** (~43 GB),否則第一個 LLM 呼叫就 404。內建 overlays 都是執行時透過 `importlib.resources` 載入,不需要 repo checkout 存在。
 
 ### 2.2 TTS — XTTS 語音設定
 
@@ -128,7 +128,7 @@ image:
   provider: "sdxl"
   model: "stabilityai/stable-diffusion-xl-base-1.0"
   device: "cuda"            # CPU 太慢, 不建議
-  num_inference_steps: 30   # 5090 上一張約 5–10 秒
+  num_inference_steps: 30   # 高階 NVIDIA GPU 一張約 5–10 秒
 ```
 
 要關掉，就把 `image.provider` 改成 `sdxl` 但保證 `[sdxl]` 沒裝 → 所有 scene 都會自動走卡片。或更乾脆：把 LLM prompt 限制讓它不要選 `generated_image` (在 `src/paperreel/providers/llm_ollama.py` 把那個 enum value 拿掉)。

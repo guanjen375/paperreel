@@ -1,5 +1,5 @@
-# RTX 5090 / Ubuntu 24.04 / CUDA 12.8 — overrides on top of default.yaml.
-# 32 GB VRAM lets you go big on every model.
+# Large-VRAM NVIDIA preset — overrides on top of default.yaml.
+# Tuned for ~24 GB+ VRAM: 70B LLM, SDXL on CUDA, parallel scene render.
 llm:
   provider: "ollama"
   # 70B class fits comfortably; pull with: ollama pull llama3.3:70b-instruct
@@ -26,4 +26,4 @@ renderer:
 
 runtime:
   max_hours: 10.0
-  parallelism: 4                # 5090 可同時 render 多 scene
+  parallelism: 4                # 大 VRAM 機可同時 render 多 scene

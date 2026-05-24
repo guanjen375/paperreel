@@ -7,8 +7,8 @@ These tests pin the new behaviour:
 
 1. ``load_config()`` works using only :mod:`importlib.resources`, with
    no filesystem assumptions beyond what pip puts in site-packages.
-2. Bundled overlays resolve by short name (``rtx5090`` →
-   ``rtx5090.yaml``).
+2. Bundled overlays resolve by short name (``bigvram`` →
+   ``bigvram.yaml``).
 3. Filesystem-path overlays still work for user overrides.
 4. A typo'd overlay raises ``FileNotFoundError`` instead of silently
    falling back to defaults.
@@ -36,18 +36,18 @@ def test_default_config_loads_without_repo_layout(tmp_path: Path,
 
 
 def test_packaged_overlay_resolves_by_short_name() -> None:
-    cfg = load_config("rtx5090")
+    cfg = load_config("bigvram")
     assert cfg["llm"]["provider"] == "ollama"
-    # rtx5090 overlay bumps the LLM model; whatever the specific value
+    # bigvram overlay bumps the LLM model; whatever the specific value
     # is, it must differ from the default.
     assert cfg["llm"]["model"] != load_config()["llm"]["model"]
 
 
 def test_packaged_overlay_accepts_yaml_extension() -> None:
-    """``--config rtx5090`` and ``--config rtx5090.yaml`` should give
+    """``--config bigvram`` and ``--config bigvram.yaml`` should give
     the same result so users don't trip over the extension."""
-    a = load_config("rtx5090")
-    b = load_config("rtx5090.yaml")
+    a = load_config("bigvram")
+    b = load_config("bigvram.yaml")
     assert a == b
 
 
@@ -70,8 +70,8 @@ def test_missing_overlay_raises_rather_than_silently_falling_back(
 def test_list_packaged_overlays_excludes_default() -> None:
     overlays = list_packaged_overlays()
     assert "default.yaml" not in overlays
-    # At least the rtx5090 overlay should be there.
-    assert "rtx5090.yaml" in overlays
+    # At least the bigvram overlay should be there.
+    assert "bigvram.yaml" in overlays
 
 
 def test_load_config_returns_independent_objects() -> None:

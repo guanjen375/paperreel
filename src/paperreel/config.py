@@ -65,8 +65,8 @@ def load_config(overlay: str | Path | None = None, *, extra: dict | None = None)
     """Load packaged default.yaml then merge an optional overlay + extra dict.
 
     ``overlay`` resolution order: literal filesystem path → packaged
-    overlay by name (``rtx5090`` resolves to the bundled
-    ``rtx5090.yaml``) → ``<name>.yaml`` variant of the above. Raises
+    overlay by name (``bigvram`` resolves to the bundled
+    ``bigvram.yaml``) → ``<name>.yaml`` variant of the above. Raises
     ``FileNotFoundError`` if nothing matches so a typo doesn't silently
     fall back to defaults.
     """
@@ -76,8 +76,8 @@ def load_config(overlay: str | Path | None = None, *, extra: dict | None = None)
         if ov_path.exists():
             cfg = _deep_merge(cfg, load_yaml(ov_path))
         else:
-            # Try packaged overlay: support both "rtx5090" and
-            # "rtx5090.yaml" for ergonomics.
+            # Try packaged overlay: support both "bigvram" and
+            # "bigvram.yaml" for ergonomics.
             candidates = (
                 str(overlay) if str(overlay).endswith(".yaml")
                 else f"{overlay}.yaml",
