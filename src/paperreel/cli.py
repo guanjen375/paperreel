@@ -112,7 +112,7 @@ def _abort(msg: str) -> None:
 def init(
     project_dir: str = typer.Argument(..., help="Path to create / re-use as project root"),
     overlay: Optional[str] = typer.Option(None, "--config", "-c",
-                                          help="Optional config overlay (name in configs/ or path)"),
+                                          help="Optional config overlay (bundled name like 'rtx5090', or filesystem path)"),
 ) -> None:
     """Create project_dir with intermediate/, assets/, outputs/, project.json, state.sqlite."""
     p, cfg, db, meta = _ensure_project(project_dir, overlay=overlay)

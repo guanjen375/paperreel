@@ -86,6 +86,11 @@ paperreel = "paperreel.cli:app"
 where = ["src"]
 
 [tool.setuptools.package-data]
+# default.yaml + bundled overlays travel inside the wheel so
+# `pip install paperreel; paperreel init …` works without the source
+# repo on disk. The previous layout pointed config.py at a sibling
+# `configs/` dir, which only exists in an editable / repo install.
+"paperreel.configs" = ["*.yaml"]
 "paperreel.renderers" = ["templates/*.html"]
 
 [tool.pytest.ini_options]
