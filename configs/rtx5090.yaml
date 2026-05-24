@@ -1,15 +1,24 @@
-# RTX 5090 / Ubuntu 24.04 / CUDA 12.8 — overrides on top of default.yaml
+# RTX 5090 / Ubuntu 24.04 / CUDA 12.8 — overrides on top of default.yaml.
+# 32 GB VRAM lets you go big on every model.
 llm:
-  provider: "anthropic"
-  model: "claude-opus-4-7"
+  provider: "ollama"
+  # 70B class fits comfortably; pull with: ollama pull llama3.3:70b-instruct
+  model: "llama3.3:70b-instruct"
+  num_ctx: 16384
   max_chunk_chars: 12000
 
 tts:
-  provider: "edge"            # 或自行接上本機 GPU TTS (Fish/CosyVoice 等)
-  voice: "zh-TW-HsiaoChenNeural"
+  provider: "xtts"
+  device: "cuda"
+  # Drop a reference WAV here for a custom narrator voice (recommended):
+  speaker_wav: null
+  speaker: "Ana Florence"
 
 image:
-  provider: "mock"            # 之後改為本機 SDXL/Flux 時改這裡
+  provider: "sdxl"
+  device: "cuda"
+  dtype: "float16"
+  num_inference_steps: 40
 
 renderer:
   fps: 30
@@ -17,4 +26,4 @@ renderer:
 
 runtime:
   max_hours: 10.0
-  parallelism: 4              # 5090 可同時 render 多 scene
+  parallelism: 4                # 5090 可同時 render 多 scene

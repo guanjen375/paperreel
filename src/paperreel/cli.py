@@ -231,19 +231,14 @@ def run_all(
     force_stage: Optional[str] = typer.Option(
         None, "--force-stage",
         help="Comma-separated stage names to force re-run (e.g. 'plan,script')"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Force mock providers + tiny resolution"),
     skip_render: bool = typer.Option(False, "--skip-render",
                                      help="Stop after subtitles (skip segments/concat/quality)"),
 ) -> None:
     """Run the full pipeline. Each stage is resumable via SQLite state."""
     if not Path(pdf).exists():
         _abort(f"PDF not found: {pdf}")
-    overlay = config
-    if dry_run:
-        # `--dry-run` forces the dryrun overlay regardless of user choice.
-        overlay = "dryrun.yaml"
     p, cfg, db, meta = _ensure_project(project, source_pdf=str(Path(pdf).resolve()),
-                                       overlay=overlay)
+                                       overlay=config)
     forced = {s.strip() for s in (force_stage or "").split(",") if s.strip()}
     start = time.time()
     pdf_name = Path(meta.source_pdf or pdf).name

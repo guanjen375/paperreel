@@ -1,4 +1,7 @@
-# paperreel default config — 適用所有環境的安全基線
+# paperreel — local-only build defaults.
+# Every provider here runs on your machine: no API keys, no network calls
+# at inference time (Ollama / TTS / SDXL all listen on localhost or load
+# weights from local disk).
 project:
   name: "paperreel-run"
   language: "zh-TW"
@@ -23,23 +26,46 @@ ingest:
   ocr_fallback: false       # 第一版不做 OCR
 
 llm:
-  provider: "anthropic"     # mock | anthropic
-  model: "claude-sonnet-4-6"
+  provider: "ollama"
+  # Default model — Qwen2.5 has solid 繁中 + structured JSON output.
+  # Swap to "qwen2.5:32b-instruct" / "llama3.3:70b-instruct" if you have
+  # the VRAM. Pull first with: ollama pull qwen2.5:14b-instruct
+  model: "qwen2.5:14b-instruct"
+  base_url: "http://localhost:11434"
+  temperature: 0.4
+  num_ctx: 8192                 # context window the daemon should use
+  request_timeout_sec: 600
   max_chunk_chars: 8000
   hierarchical_levels: 2
-  use_pdf_images: true      # 是否引用原 PDF 圖片
+  use_pdf_images: true
   forbid_verbatim_copy: true
   max_verbatim_run_chars: 40
 
 tts:
-  provider: "edge"          # mock | edge
-  voice: "zh-TW-HsiaoChenNeural"
+  provider: "xtts"
+  # Pick ONE voice source:
+  #   speaker_wav: absolute path to a 6–10s 16k mono WAV (best for zh-TW
+  #                voice cloning — drop a reference clip here)
+  #   speaker:     name of an XTTS built-in speaker
+  speaker_wav: null
+  speaker: "Ana Florence"
+  # XTTS uses zh-cn as the Chinese language tag — feeding it 繁體 text is fine.
+  language: "zh-cn"
+  device: "auto"                # auto | cuda | cpu
   sample_rate_hz: 48000
   format: "wav"
   speaking_rate: 1.0
 
 image:
-  provider: "mock"          # mock | (future) sdxl/flux
+  provider: "sdxl"
+  # Only scenes with visual_type=generated_image actually hit SDXL; other
+  # scenes use the deterministic Pillow card renderer.
+  model: "stabilityai/stable-diffusion-xl-base-1.0"
+  num_inference_steps: 30
+  guidance_scale: 6.5
+  device: "auto"                # auto | cuda  (cpu is too slow to be useful)
+  dtype: "float16"
+  negative_prompt: "low quality, blurry, watermark, text, signature, deformed, ugly"
 
 renderer:
   resolution: [1920, 1080]
@@ -50,7 +76,7 @@ renderer:
   background_color: "#0F172A"
   text_color: "#F8FAFC"
   accent_color: "#22D3EE"
-  font_path: null            # null 表示讓 Pillow 用預設;  填入 .ttf 路徑可換字
+  font_path: null               # null 表示讓 Pillow 用預設; 填入 .ttf 路徑可換字
   ken_burns: true
   ffmpeg_binary: "ffmpeg"
   ffprobe_binary: "ffprobe"
@@ -62,9 +88,9 @@ subtitles:
 
 quality:
   duration_tolerance_pct: 8.0
-  warn_verbatim_pct: 5.0     # 講稿與 PDF 原文重疊比例上限
+  warn_verbatim_pct: 5.0
 
 runtime:
   max_hours: 10.0
   scene_retry_max: 2
-  parallelism: 1             # 第一版採序列, 簡化續跑
+  parallelism: 1                # 第一版採序列, 簡化續跑

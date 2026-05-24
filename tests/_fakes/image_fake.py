@@ -1,18 +1,17 @@
-"""Mock image provider — emits a deterministic gradient PNG with the prompt
-text watermarked, so visual scenes always have *something* to render."""
+"""Test-only fake image generator — writes a deterministic gradient PNG."""
 from __future__ import annotations
 
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from ..hashing import sha256_text
-from ..io_utils import ensure_dir
-from .image_base import ImageProvider
+from paperreel.hashing import sha256_text
+from paperreel.io_utils import ensure_dir
+from paperreel.providers.image_base import ImageProvider
 
 
-class MockImage(ImageProvider):
-    name = "mock"
+class FakeImage(ImageProvider):
+    name = "fake"
 
     def __init__(self, cfg: dict | None = None):
         self.cfg = cfg or {}
@@ -21,7 +20,6 @@ class MockImage(ImageProvider):
                  width: int = 1280, height: int = 720) -> str:
         out = Path(out_path)
         ensure_dir(out.parent)
-        # Deterministic seed from prompt for stable colours
         digest = sha256_text(prompt)
         r = int(digest[0:2], 16); g = int(digest[2:4], 16); b = int(digest[4:6], 16)
         top = (max(20, r // 2), max(20, g // 2), max(40, b // 2))
@@ -40,8 +38,8 @@ class MockImage(ImageProvider):
             font = ImageFont.truetype("arial.ttf", 40)
         except Exception:
             font = ImageFont.load_default()
-        label = (prompt[:60] + ("…" if len(prompt) > 60 else "")) or "mock image"
-        draw.text((40, height - 80), f"[mock] {label}",
+        label = (prompt[:60] + ("…" if len(prompt) > 60 else "")) or "fake image"
+        draw.text((40, height - 80), f"[fake] {label}",
                   fill=(245, 245, 245), font=font)
         img.save(out)
         return str(out)

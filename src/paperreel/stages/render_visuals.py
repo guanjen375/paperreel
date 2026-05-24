@@ -1,8 +1,12 @@
 """Stage 6 — render the per-scene visual layer (PNGs).
 
-Renders one card per scene using Pillow. If a scene's visual_type points at
-a PDF image but that image is missing, falls back to teaching_card so the
-pipeline never stalls.
+For each scene:
+- If `visual_type == generated_image` and no asset is on disk yet, call
+  the local SDXL provider (image.provider=sdxl) using `visual_prompt`.
+  Falls back to the Pillow card renderer if SDXL fails — the pipeline
+  must not stall on one bad image.
+- All other visual types are rendered by `CardRenderer` (deterministic,
+  CPU, no GPU needed).
 """
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ from pathlib import Path
 from ..hashing import hash_inputs
 from ..io_utils import atomic_write_json, read_json
 from ..models import Scene, SceneGraph, SceneStatus, VisualType
+from ..providers.image_base import make_image_provider
 from ..renderers.card_renderer import CardRenderer
 from ..state import StateDB
 
@@ -20,7 +25,23 @@ def paths_for(project_root: str | Path) -> dict[str, Path]:
     return {
         "scene_graph": root / "intermediate" / "scene_graph.json",
         "visuals_dir": root / "assets" / "visuals",
+        "generated_dir": root / "assets" / "generated",
     }
+
+
+def _generate_sdxl_asset(scene: Scene, out_path: Path, image_cfg: dict,
+                         resolution: tuple[int, int]) -> str | None:
+    """Generate one SDXL image. Return path on success, None on failure
+    (caller falls back to a card)."""
+    prompt = (scene.visual_prompt or scene.title or "").strip()
+    if not prompt:
+        return None
+    try:
+        provider = make_image_provider(image_cfg)
+        return provider.generate(prompt, out_path,
+                                 width=resolution[0], height=resolution[1])
+    except Exception:
+        return None
 
 
 def run(*, project_root: str | Path, db: StateDB, config: dict,
@@ -28,6 +49,7 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
     p = paths_for(project_root)
     graph = SceneGraph.model_validate(read_json(p["scene_graph"]))
     rcfg = config.get("renderer", {})
+    icfg = config.get("image", {})
     res = tuple(rcfg.get("resolution", [1920, 1080]))
     renderer = CardRenderer(
         resolution=(int(res[0]), int(res[1])),
@@ -36,7 +58,7 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
         accent=rcfg.get("accent_color", "#22D3EE"),
         font_path=rcfg.get("font_path"),
     )
-    input_hash = hash_inputs("visuals_v1", rcfg)
+    input_hash = hash_inputs("visuals_v1", rcfg, icfg)
     db.start_stage("visuals", input_hash)
 
     new_scenes: list[Scene] = []
@@ -50,16 +72,38 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
         if sc.status == SceneStatus.failed:
             new_scenes.append(sc)
             continue
+
+        # 1) For generated_image scenes, run SDXL into assets/generated/<id>.png.
+        #    The result is consumed by the card renderer (inset image), then
+        #    visual_asset_paths is rewritten to point at the final card so
+        #    later stages (segments / quality) read the renderable PNG.
+        sdxl_src: str | None = None
+        if sc.visual_type == VisualType.generated_image and not sc.visual_asset_paths:
+            gen_path = p["generated_dir"] / f"{sc.scene_id}.png"
+            sdxl_src = _generate_sdxl_asset(sc, gen_path, icfg, (int(res[0]), int(res[1])))
+            if sdxl_src:
+                sc = sc.model_copy(update={"visual_asset_paths": [sdxl_src]})
+                db.register_artifact(Path(sdxl_src), stage="visuals",
+                                     scene_id=sc.scene_id,
+                                     media_type="image/png",
+                                     provenance={"role": "sdxl_source",
+                                                 "model": icfg.get("model")})
+            else:
+                # Downgrade so card renderer takes over.
+                sc = sc.model_copy(update={"visual_type": VisualType.bullet_card})
+
+        # 2) PDF-image visuals require the asset to exist on disk.
+        if sc.visual_type == VisualType.pdf_image:
+            if not sc.visual_asset_paths or not Path(sc.visual_asset_paths[0]).exists():
+                sc = sc.model_copy(update={"visual_type": VisualType.bullet_card})
+
+        # 3) Render the final card via CardRenderer.
         try:
-            # Validate PDF image presence before letting the renderer decide.
-            if sc.visual_type in (VisualType.pdf_image, VisualType.generated_image):
-                if not sc.visual_asset_paths or not Path(sc.visual_asset_paths[0]).exists():
-                    sc = sc.model_copy(update={"visual_type": VisualType.bullet_card})
             renderer.render_scene(sc, out_path)
         except Exception as e:
-            # Fallback to a teaching card so we don't lose the scene.
             try:
-                fb = sc.model_copy(update={"visual_type": VisualType.bullet_card})
+                fb = sc.model_copy(update={"visual_type": VisualType.bullet_card,
+                                           "visual_asset_paths": []})
                 renderer.render_scene(fb, out_path)
                 sc = fb.model_copy(update={
                     "last_error": f"render fallback: {e!r}",
@@ -77,8 +121,11 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
                 new_scenes.append(sc)
                 continue
 
-        prev = sc.status if sc.status == SceneStatus.audio_done else sc.status
-        new_status = SceneStatus.visual_done if prev != SceneStatus.failed else sc.status
+        # visual_asset_paths[0] must be the final renderable card; SDXL
+        # source stays on disk under assets/generated/ but isn't tracked
+        # here (downstream readers always use [0]).
+        new_status = (SceneStatus.visual_done
+                      if sc.status != SceneStatus.failed else sc.status)
         sc = sc.model_copy(update={
             "visual_asset_paths": [str(out_path)],
             "status": new_status,

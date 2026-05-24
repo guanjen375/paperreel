@@ -1,24 +1,23 @@
-"""Mock LLM — deterministic, offline, zero-dep summaries.
+"""Fake LLM used only inside the test suite.
 
-The mock keeps the *shape* of an LLM response so the whole pipeline can run
-end-to-end without keys. It deliberately picks short paraphrased fragments
-from the source (truncated headings, first sentence per chunk) so we can
-still test the source-provenance and verbatim-detection paths, but it labels
-itself clearly in the rationale field.
+Deterministic and offline — picks short paraphrased fragments from the
+source so the verbatim-detection / source-provenance paths still get
+exercised, but labels itself in `rationale` so a real run could never be
+confused with a fake one.
 """
 from __future__ import annotations
 
 import re
-from typing import Any
 
-from ..utils.text_cleaning import cjk_char_count, normalise_text, extract_headings
-from .llm_base import LLMProvider
+from paperreel.providers.llm_base import LLMProvider
+from paperreel.utils.text_cleaning import (cjk_char_count, extract_headings,
+                                            normalise_text)
 
 _SENT_SPLIT = re.compile(r"(?<=[。．.!?！？])\s*")
 
 
-class MockLLM(LLMProvider):
-    name = "mock"
+class FakeLLM(LLMProvider):
+    name = "fake"
 
     def __init__(self, cfg: dict | None = None):
         self.cfg = cfg or {}
@@ -29,7 +28,6 @@ class MockLLM(LLMProvider):
         text = normalise_text(chunk_text)
         headings = extract_headings(text, max_lines=80)
         sents = [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
-        # Take first + last sentence as a crude "abstractive" summary.
         picks: list[str] = []
         if sents:
             picks.append(sents[0])
@@ -51,7 +49,6 @@ class MockLLM(LLMProvider):
     # ---------- outline ----------
     def build_outline(self, chunk_summaries: list[dict], *,
                       target_minutes: float, project: str) -> dict:
-        # Group chunks into chapters by heading boundaries; fall back to even bins.
         chapters: list[dict] = []
         if not chunk_summaries:
             chapters.append({
@@ -63,7 +60,6 @@ class MockLLM(LLMProvider):
                 "recap": False,
             })
         else:
-            # bin into ceil(target_minutes / 8) chapters, min 1.
             n = max(1, min(len(chunk_summaries), max(1, round(target_minutes / 8.0))))
             per = max(1, len(chunk_summaries) // n)
             for i in range(n):
@@ -85,7 +81,7 @@ class MockLLM(LLMProvider):
             "project": project,
             "language": "zh-TW",
             "target_minutes": float(target_minutes),
-            "rationale": "mock outline: even-bin by heading count",
+            "rationale": "fake outline: even-bin by heading count",
             "chapters": chapters,
         }
 
@@ -94,8 +90,6 @@ class MockLLM(LLMProvider):
                              *, chars_per_scene: int,
                              forbid_verbatim: bool = True) -> list[dict]:
         pages = list(chapter.get("source_pages") or [1])
-        # Stitch only the headings + first ~chars_per_scene of each page,
-        # then paraphrase by prefixing with a teacher voice and trimming.
         scenes: list[dict] = []
         per_scene_pages = max(1, len(pages) // max(1, round(chapter.get("target_minutes", 5) / 1.0)))
         idx = 0
@@ -109,7 +103,6 @@ class MockLLM(LLMProvider):
             ).strip()
             if not joined:
                 joined = f"本段聚焦於第 {sp[0]} 頁的重點。"
-            # Paraphrase by trimming and wrapping in teacher cadence.
             base = joined.split("。")[0][:max(40, chars_per_scene - 60)]
             narration = (
                 f"接下來這段課程，我們聚焦在第 {sp[0]} 頁附近的核心觀念。"
@@ -131,14 +124,14 @@ class MockLLM(LLMProvider):
                                               cjk_char_count(narration) / 240.0 * 60.0),
             })
             scene_no += 1
-        if not scenes:  # safety net
+        if not scenes:
             scenes.append({
                 "scene_id": f"{chapter['chapter_id']}_sc_001",
                 "chapter_id": chapter["chapter_id"],
                 "title": chapter.get("title", "重點"),
                 "source_pages": pages or [1],
                 "source_refs": [f"p.{p}" for p in (pages or [1])],
-                "narration_text_zh_tw": "（佔位旁白）這一段是 mock 佔位內容。",
+                "narration_text_zh_tw": "（測試佔位旁白）這一段是測試用 fake 內容。",
                 "on_screen_text": "重點",
                 "visual_hint": "簡報式重點卡",
                 "visual_type": "bullet_card",

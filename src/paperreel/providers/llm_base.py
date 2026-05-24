@@ -1,8 +1,12 @@
-"""LLM provider interface — outline / script / scene generation."""
+"""LLM provider interface — outline / script / scene generation.
+
+Local-only build: the **only** supported backend is `ollama`. There is no
+mock or API-based fallback — if Ollama is not reachable, the pipeline
+fails fast.
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Protocol
 
 
 class LLMProvider(ABC):
@@ -26,11 +30,10 @@ class LLMProvider(ABC):
 
 
 def make_llm_provider(provider_cfg: dict) -> LLMProvider:
-    name = (provider_cfg or {}).get("provider", "mock").lower()
-    if name == "mock":
-        from .llm_mock import MockLLM
-        return MockLLM(provider_cfg)
-    if name == "anthropic":
-        from .llm_anthropic import AnthropicLLM
-        return AnthropicLLM(provider_cfg)
-    raise ValueError(f"unknown llm provider: {name}")
+    name = (provider_cfg or {}).get("provider", "ollama").lower()
+    if name == "ollama":
+        from .llm_ollama import OllamaLLM
+        return OllamaLLM(provider_cfg)
+    raise ValueError(
+        f"unknown llm provider: {name!r} — local build only supports 'ollama'"
+    )

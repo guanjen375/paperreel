@@ -1,4 +1,8 @@
-"""TTS provider interface — all providers output 48kHz mono wav by default."""
+"""TTS provider interface — all providers output mono WAV at the
+project's target sample rate.
+
+Local-only build: the **only** supported backend is `xtts` (Coqui XTTS v2).
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -20,11 +24,10 @@ class TTSProvider(ABC):
 
 
 def make_tts_provider(cfg: dict) -> TTSProvider:
-    name = (cfg or {}).get("provider", "mock").lower()
-    if name == "mock":
-        from .tts_mock import MockTTS
-        return MockTTS(cfg)
-    if name == "edge":
-        from .tts_edge import EdgeTTS
-        return EdgeTTS(cfg)
-    raise ValueError(f"unknown tts provider: {name}")
+    name = (cfg or {}).get("provider", "xtts").lower()
+    if name == "xtts":
+        from .tts_xtts import XttsTTS
+        return XttsTTS(cfg)
+    raise ValueError(
+        f"unknown tts provider: {name!r} — local build only supports 'xtts'"
+    )

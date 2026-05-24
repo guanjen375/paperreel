@@ -1,4 +1,8 @@
-"""Image-generation provider interface (kept minimal for MVP)."""
+"""Image-generation provider interface.
+
+Local-only build: the **only** supported backend is `sdxl`
+(Stable Diffusion XL via diffusers).
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -15,8 +19,10 @@ class ImageProvider(ABC):
 
 
 def make_image_provider(cfg: dict) -> ImageProvider:
-    name = (cfg or {}).get("provider", "mock").lower()
-    if name == "mock":
-        from .image_mock import MockImage
-        return MockImage(cfg)
-    raise ValueError(f"unknown image provider: {name}")
+    name = (cfg or {}).get("provider", "sdxl").lower()
+    if name == "sdxl":
+        from .image_sdxl import SdxlImage
+        return SdxlImage(cfg)
+    raise ValueError(
+        f"unknown image provider: {name!r} — local build only supports 'sdxl'"
+    )
