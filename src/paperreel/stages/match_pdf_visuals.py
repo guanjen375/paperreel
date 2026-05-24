@@ -175,11 +175,14 @@ def run(*, project_root: str | Path, db: StateDB,
     used_counts: dict[str, int] = {}
     new_scenes: list[Scene] = []
     for sc in graph.scenes:
-        # Skip scenes that already point at a real (external) asset —
-        # we shouldn't overwrite something the LLM / a previous stage
-        # explicitly chose.
-        already_assigned = bool(sc.visual_asset_paths)
-        if already_assigned:
+        # Skip scenes whose SOURCE input has already been picked. Match
+        # used to look at visual_asset_paths, but that field also holds
+        # the renderer's output — after the first render pass the scene
+        # carried the final card path, so a second match_visuals on
+        # resume saw "already assigned" and silently lost the figure,
+        # then render_visuals embedded the previous card into a new
+        # card (self-nesting).
+        if sc.visual_source_paths:
             new_scenes.append(sc)
             continue
         if sc.visual_type in (VisualType.title_card, VisualType.recap,
@@ -197,7 +200,7 @@ def run(*, project_root: str | Path, db: StateDB,
         used_counts[figure.image_id] = used_counts.get(figure.image_id, 0) + 1
         sc = sc.model_copy(update={
             "visual_type": VisualType.pdf_image,
-            "visual_asset_paths": [figure.path],
+            "visual_source_paths": [figure.path],
         })
         matches_log.append({
             "scene_id": sc.scene_id,

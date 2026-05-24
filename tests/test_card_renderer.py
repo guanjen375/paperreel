@@ -55,7 +55,7 @@ def test_pdf_image_card_paints_inset_and_caption(tmp_path: Path) -> None:
     out = tmp_path / "card.png"
     r.render_scene(
         _scene(visual_type=VisualType.pdf_image,
-                visual_asset_paths=[str(figure)],
+                visual_source_paths=[str(figure)],
                 on_screen_text="此圖說明紅色觀念"),
         out,
     )
@@ -82,7 +82,7 @@ def test_pdf_image_card_without_caption_does_not_crash(tmp_path: Path) -> None:
     out = tmp_path / "card.png"
     r.render_scene(
         _scene(visual_type=VisualType.pdf_image,
-                visual_asset_paths=[str(figure)],
+                visual_source_paths=[str(figure)],
                 on_screen_text=None),
         out,
     )
@@ -90,14 +90,14 @@ def test_pdf_image_card_without_caption_does_not_crash(tmp_path: Path) -> None:
 
 
 def test_pdf_image_card_missing_image_falls_back_gracefully(tmp_path: Path) -> None:
-    """A dangling visual_asset_path must not abort the whole render —
+    """A dangling visual_source_path must not abort the whole render —
     we draw an error notice and keep going so resume can pick the
     scene up next time."""
     r = CardRenderer(resolution=(1280, 720))
     out = tmp_path / "card.png"
     r.render_scene(
         _scene(visual_type=VisualType.pdf_image,
-                visual_asset_paths=["/no/such/path.png"]),
+                visual_source_paths=["/no/such/path.png"]),
         out,
     )
     assert out.exists()

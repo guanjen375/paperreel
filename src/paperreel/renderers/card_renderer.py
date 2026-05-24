@@ -90,14 +90,18 @@ class CardRenderer:
             img = self._bullet_card(scene.title, bullets)
         elif vt == VisualType.diagram:
             img = self._teaching_card(scene.title, scene.on_screen_text or scene.narration_text_zh_tw[:120])
-        elif vt == VisualType.pdf_image and scene.visual_asset_paths:
+        elif vt == VisualType.pdf_image and scene.visual_source_paths:
+            # `visual_source_paths` holds the upstream PDF crop / SDXL
+            # output. We never read from `visual_asset_paths` here —
+            # that's the rendered output and would cause self-nesting
+            # on a second render pass.
             img = self._pdf_image_card(
-                scene.title, scene.visual_asset_paths[0],
+                scene.title, scene.visual_source_paths[0],
                 caption=scene.on_screen_text,
             )
-        elif vt == VisualType.generated_image and scene.visual_asset_paths:
+        elif vt == VisualType.generated_image and scene.visual_source_paths:
             img = self._pdf_image_card(
-                scene.title, scene.visual_asset_paths[0],
+                scene.title, scene.visual_source_paths[0],
                 caption=scene.on_screen_text,
             )
         else:

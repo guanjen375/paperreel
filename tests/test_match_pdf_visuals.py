@@ -29,6 +29,7 @@ from paperreel.state import StateDB
 def _scene(scene_id: str, *, chapter: str = "ch_001",
            source_pages: list[int] | None = None,
            visual_type: VisualType = VisualType.bullet_card,
+           visual_source_paths: list[str] | None = None,
            visual_asset_paths: list[str] | None = None,
            title: str = "Test scene",
            on_screen_text: str | None = None,
@@ -40,6 +41,7 @@ def _scene(scene_id: str, *, chapter: str = "ch_001",
         visual_prompt=visual_prompt,
         visual_type=visual_type,
         on_screen_text=on_screen_text,
+        visual_source_paths=visual_source_paths or [],
         visual_asset_paths=visual_asset_paths or [],
         estimated_duration_sec=25.0,
         status=SceneStatus.pending,
@@ -112,10 +114,14 @@ def test_match_assigns_figure_on_source_page(
     db.close()
     out = g.scenes[0]
     assert out.visual_type == VisualType.pdf_image
-    assert len(out.visual_asset_paths) == 1
-    assert Path(out.visual_asset_paths[0]).exists()
+    # The matched PDF figure goes into visual_source_paths (the
+    # renderer's input). visual_asset_paths (the renderer's output)
+    # stays empty until render_visuals runs.
+    assert len(out.visual_source_paths) == 1
+    assert Path(out.visual_source_paths[0]).exists()
+    assert out.visual_asset_paths == []
     # Should have picked the green figure (page 2), not the blue one (page 4).
-    img = Image.open(out.visual_asset_paths[0]).convert("RGB")
+    img = Image.open(out.visual_source_paths[0]).convert("RGB")
     px = img.getpixel((img.width // 2, img.height // 2))
     assert px[1] > px[0] and px[1] > px[2], f"expected green hero pixel, got {px}"
 
@@ -140,23 +146,47 @@ def test_match_leaves_scene_alone_when_no_figure_on_pages(
     # under the default min_score=3.0, so the scene must be untouched.
     out = g.scenes[0]
     assert out.visual_type == VisualType.bullet_card
-    assert out.visual_asset_paths == []
+    assert out.visual_source_paths == []
 
 
-def test_match_does_not_overwrite_existing_asset(
+def test_match_does_not_overwrite_existing_source(
     project_dir: Path, tmp_path: Path, test_cfg: dict
 ) -> None:
+    """If a scene already has visual_source_paths set (e.g. by a prior
+    match or by hand), the stage must not clobber that choice."""
     pdf = _two_figure_pdf(tmp_path)
     sc = _scene("ch_001_sc_001", source_pages=[2],
-                  visual_asset_paths=["/tmp/some_existing_thing.png"],
-                  title="Has asset already")
+                  visual_source_paths=["/tmp/some_existing_thing.png"],
+                  title="Has source already")
     db = _setup_project(project_dir, scenes=[sc],
                          images_pdf_fixture=pdf,
                          tmp_path=tmp_path, test_cfg=test_cfg)
     g = match_pdf_visuals.run(project_root=project_dir, db=db, config=test_cfg)
     db.close()
     out = g.scenes[0]
-    assert out.visual_asset_paths == ["/tmp/some_existing_thing.png"]
+    assert out.visual_source_paths == ["/tmp/some_existing_thing.png"]
+
+
+def test_match_runs_when_only_visual_asset_paths_set(
+    project_dir: Path, tmp_path: Path, test_cfg: dict
+) -> None:
+    """Regression for the self-nesting bug: a scene whose
+    visual_asset_paths is populated (from a previous render pass) but
+    whose visual_source_paths is empty MUST still get re-matched.
+    Otherwise resume loses the upstream figure forever."""
+    pdf = _two_figure_pdf(tmp_path)
+    sc = _scene("ch_001_sc_001", source_pages=[2],
+                  visual_asset_paths=["/some/previously/rendered/card.png"],
+                  visual_type=VisualType.pdf_image,
+                  title="Diagram")
+    db = _setup_project(project_dir, scenes=[sc],
+                         images_pdf_fixture=pdf,
+                         tmp_path=tmp_path, test_cfg=test_cfg)
+    g = match_pdf_visuals.run(project_root=project_dir, db=db, config=test_cfg)
+    db.close()
+    out = g.scenes[0]
+    assert out.visual_source_paths, "must re-match because source was empty"
+    assert "pdf_images" in out.visual_source_paths[0]
 
 
 def test_match_never_overwrites_title_or_recap(
@@ -198,8 +228,8 @@ def test_match_assigns_distinct_figures_across_scenes(
     g = match_pdf_visuals.run(project_root=project_dir, db=db, config=test_cfg)
     db.close()
     by_id = {s.scene_id: s for s in g.scenes}
-    p1 = by_id["ch_001_sc_001"].visual_asset_paths[0]
-    p2 = by_id["ch_001_sc_002"].visual_asset_paths[0]
+    p1 = by_id["ch_001_sc_001"].visual_source_paths[0]
+    p2 = by_id["ch_001_sc_002"].visual_source_paths[0]
     assert p1 != p2
     # Distinguishable by colour: fig_a is green, fig_b is blue.
     img1 = Image.open(p1).convert("RGB")
@@ -243,10 +273,69 @@ def test_prefer_pdf_figures_false_short_circuits(
     db.close()
     out = g.scenes[0]
     assert out.visual_type == VisualType.bullet_card
-    assert out.visual_asset_paths == []
+    assert out.visual_source_paths == []
     # And the run still wrote the matches log so status reporting works.
     log = read_json(project_dir / "intermediate" / "pdf_visual_matches.json")
     assert log["skipped"] is True
+
+
+def test_resume_does_not_self_nest_pdf_image_card(
+    project_dir: Path, tmp_path: Path, test_cfg: dict
+) -> None:
+    """End-to-end regression: run match_visuals + render_visuals twice.
+    On the second pass the matched PDF figure must still be the source
+    (not the previously-rendered card), so the renderer doesn't embed
+    its own output inside a new card."""
+    from paperreel.stages import render_visuals
+
+    pdf = _two_figure_pdf(tmp_path)
+    sc = _scene("ch_001_sc_001", source_pages=[2], title="Diagram",
+                  visual_prompt="green diagram")
+    db = _setup_project(project_dir, scenes=[sc],
+                         images_pdf_fixture=pdf,
+                         tmp_path=tmp_path, test_cfg=test_cfg)
+
+    # First pass: match + render.
+    match_pdf_visuals.run(project_root=project_dir, db=db, config=test_cfg)
+    render_visuals.run(project_root=project_dir, db=db, config=test_cfg)
+
+    g_after_first = SceneGraph.model_validate(read_json(
+        project_dir / "intermediate" / "scene_graph.json"
+    ))
+    sc_after_first = g_after_first.scenes[0]
+    src_after_first = sc_after_first.visual_source_paths[0]
+    asset_after_first = sc_after_first.visual_asset_paths[0]
+    assert "pdf_images" in src_after_first
+    assert "assets/visuals" in asset_after_first
+    assert src_after_first != asset_after_first
+
+    # Second pass: source path must still be the PDF figure, never
+    # the rendered card. This is the regression: in the old (single
+    # visual_asset_paths field) world, the source would silently become
+    # the previously rendered card.
+    match_pdf_visuals.run(project_root=project_dir, db=db, config=test_cfg)
+    g_after_second = SceneGraph.model_validate(read_json(
+        project_dir / "intermediate" / "scene_graph.json"
+    ))
+    sc_after_second = g_after_second.scenes[0]
+    assert sc_after_second.visual_source_paths == [src_after_first]
+    assert sc_after_second.visual_type == VisualType.pdf_image
+
+    # And a fresh-config re-render reads from the source, not from the
+    # previously rendered card.
+    new_cfg = {**test_cfg,
+               "renderer": {**test_cfg["renderer"],
+                             "background_color": "#FF00FF"}}
+    render_visuals.run(project_root=project_dir, db=db, config=new_cfg)
+    g_after_rerender = SceneGraph.model_validate(read_json(
+        project_dir / "intermediate" / "scene_graph.json"
+    ))
+    final_src = g_after_rerender.scenes[0].visual_source_paths[0]
+    assert final_src == src_after_first, (
+        "second render swapped its own output into visual_source_paths — "
+        "this is the self-nesting bug"
+    )
+    db.close()
 
 
 def test_match_writes_log_for_inspection(

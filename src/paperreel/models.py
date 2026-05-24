@@ -169,6 +169,14 @@ class Scene(BaseModel):
     actual_duration_sec: float | None = None
     audio_path: str | None = None
     subtitle_path: str | None = None
+    # `visual_source_paths` is the *input* the renderer consumes: an
+    # extracted PDF figure crop, a freshly generated SDXL image, or a
+    # manually-attached asset. `visual_asset_paths` is the renderer's
+    # *output*: the final card that segments/quality consume.
+    # Keeping them separate lets `match_visuals` + `render_visuals`
+    # be idempotent across resumes — otherwise a second render reads
+    # its own previous output and embeds the card inside a new card.
+    visual_source_paths: list[str] = []
     visual_asset_paths: list[str] = []
     rendered_video_path: str | None = None
     status: SceneStatus = SceneStatus.pending
