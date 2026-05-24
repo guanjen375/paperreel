@@ -163,9 +163,19 @@ class OllamaLLM(LLMProvider):
             f"[p.{p}]\n{source_pages_text.get(p, '')[:1800]}"
             for p in chapter.get("source_pages", [])
         )
+        # Each scene is ~60s of video, so target_minutes maps roughly 1:1 to
+        # scene count. Without an explicit cap the model happily emits 8–15
+        # bloated scenes for a 4-minute chapter and overflows the JSON budget
+        # mid-string.
+        expected_scenes = max(1, round(float(chapter.get("target_minutes", 1.0))))
+        max_scenes = expected_scenes + 2
         prompt = (
             f"章節資料: {json.dumps(chapter, ensure_ascii=False)}\n"
-            f"每個 scene 旁白上限 {chars_per_scene} 個字。\n"
+            f"請產出 **約 {expected_scenes} 個** scene "
+            f"(可在 {max(1, expected_scenes - 1)}~{max_scenes} 之間,"
+            f"但**絕不超過 {max_scenes} 個**)。\n"
+            f"每個 scene 的 narration_text_zh_tw **硬性上限 {chars_per_scene} 個字**,"
+            f"超過視為錯誤,務必精簡。\n"
             "請輸出 JSON 物件，格式為 {\"scenes\": [...]}，scenes 每筆為 ScriptScene："
             "{\"scene_id\":..., \"chapter_id\":..., \"title\":..., "
             "\"source_pages\":[..], \"source_refs\":[..], "
@@ -182,7 +192,7 @@ class OllamaLLM(LLMProvider):
             "--- 原始素材 ---\n"
             + source_blob
         )
-        out = self._ask_json(prompt, max_tokens=4000)
+        out = self._ask_json(prompt, max_tokens=6000)
         if isinstance(out, list):
             scenes = out
         elif isinstance(out, dict):

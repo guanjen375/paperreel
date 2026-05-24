@@ -137,19 +137,56 @@ image:
 
 ## 3. 產生影片 (一條指令)
 
+最簡形式 — 只需要 PDF 路徑跟 `--project`,其他都有預設:
+
 ```bash
-paperreel all ./your_book.pdf \
+paperreel ./your_book.pdf --project ./runs/my_video
+```
+
+完整形式 (所有 flag 都填):
+
+```bash
+paperreel ./your_book.pdf \
     --project ./runs/my_video \
     --target-minutes auto \
     --max-hours 10 \
-    --resume
+    --config bigvram \
+    --force-stage script,audio \
+    --skip-render
 ```
 
-- `--target-minutes auto`：依 PDF 篇幅自動估算 (3–120 分鐘)；可填整數強制指定。短 PDF 別預期硬撐到 12 min — 真實長度通常是 PDF 字數 / 2200 chars/min，下限 3 min。
-- `--max-hours 10`：總執行時間上限 (中斷後再 `--resume`)。
-- `--resume`：中斷後再執行同一行即從中斷點接續。
+| 參數 | 預設 | 說明 |
+|---|---|---|
+| `<pdf>` | (必填) | 來源 PDF 路徑。**必須放在 flag 前面**(技術限制,看下方說明) |
+| `--project` / `-p` | (必填) | 專案輸出資料夾。第一次跑會自動建立,之後同路徑會自動續跑(不用下 `--resume`) |
+| `--target-minutes` | `auto` | 影片目標長度。`auto`=依 PDF 字數估 (PDF 字數 / 2200 chars/min,下限 3 min,上限 120 min);填整數例 `15` 可強制 |
+| `--max-hours` | `10` | 總執行時間上限(小時),超過會中止。下次再跑同一行會自動從斷點接續 |
+| `--config` / `-c` | (不套用) | 內建 overlay 名稱(目前有 `bigvram`)或自己的 yaml 路徑 |
+| `--force-stage` | (無) | 逗號分隔的 stage 名,強制重跑這些 stage。例 `--force-stage script,audio` |
+| `--skip-render` | `false` | 跑到 subtitles 就停,不做最後的 mp4 編碼 (適合先確認腳本) |
 
-第一次跑會看到 ollama / TTS / (可能) SDXL 的下載 + 載入時間；之後跑都是冷快取 → 立即開始。
+> **flag 順序限制**: `paperreel <pdf> --flag value` 可以,但 `paperreel --flag value <pdf>` 不行 (Typer 子命令 routing 的限制)。flag-first 的人請改寫 `paperreel run <pdf> --flag value` (`run` 是內部子命令名稱,顯式指定就沒問題)。
+
+跑起來會看到分階段進度,確保你看得出當前在哪步、有沒有當掉:
+
+```
+PDF:      /home/david/test.pdf
+Project:  /home/david/paperreel/runs/my_video
+Target:   auto min
+Config:   default
+Pipeline: 11 stages (render to mp4)
+────────────────────────────────────────────────────────────
+✓ [1/11] 解析 PDF — 2 頁, 2577 CJK 字, 0 圖  (0.8s)
+✓ [2/11] 規劃章節 — 4 章, 12.0 分鐘  (38.2s)
+✓ [3/11] 寫腳本 — 12 scenes, ~12.0 分鐘  (1m 24s)
+✓ [4/11] 組 scene graph — 12 scenes  (0.1s)
+✓ [5/11] 配對 PDF 圖片 — 0/12 配到圖  (0.2s)
+⠙ [6/11] 合成語音…
+```
+
+每一行是「打勾 + [幾/總共] + 階段名 + 主要產出摘要 + 用時」。最新跑中的階段會顯示旋轉 spinner — 只要 spinner 在轉就代表沒當掉。
+
+第一次跑會看到 ollama / TTS / (可能) SDXL 的下載 + 載入時間,所以第一跑會比較久;之後同一台機器再跑都是冷快取 → 立即開始。中斷後重下同樣指令會自動接續(state 存在 `state.sqlite`)。
 
 ---
 
@@ -173,14 +210,14 @@ paperreel all ./your_book.pdf \
 ```bash
 paperreel status        --project ./runs/my_video      # 看每個 stage 狀態
 paperreel retry-failed  --project ./runs/my_video      # 重做標 failed 的 scene
-paperreel all ./your_book.pdf --project ./runs/my_video --resume   # 繼續跑
+paperreel ./your_book.pdf --project ./runs/my_video    # 繼續跑 (auto-resume)
 ```
 
 只想重做某幾個 stage：
 
 ```bash
-paperreel all ./your_book.pdf --project ./runs/my_video \
-    --force-stage plan,script,scenes --resume
+paperreel ./your_book.pdf --project ./runs/my_video \
+    --force-stage plan,script,scenes
 ```
 
 可用的 stage 名稱：`ingest, plan, script, scenes, match_visuals, audio, visuals, subtitles, segments, concat, quality`。

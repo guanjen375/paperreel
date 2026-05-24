@@ -1,4 +1,4 @@
-"""Typer CLI — one command per pipeline stage plus the orchestrator `all`."""
+"""Typer CLI — ``paperreel <pdf>`` runs the full pipeline; subcommands target individual stages."""
 from __future__ import annotations
 
 import json
@@ -31,8 +31,14 @@ from .stages import (build_outline, build_scene_graph, build_subtitles,
                      synthesize_audio, write_script)
 from .state import StateDB
 
-app = typer.Typer(add_completion=False, no_args_is_help=True,
-                  help="PDF -> 繁體中文教學影片 pipeline.")
+app = typer.Typer(
+    add_completion=False, no_args_is_help=True,
+    help=(
+        "PDF -> 繁體中文教學影片 pipeline.\n\n"
+        "Usage: paperreel <pdf> --project <dir>   (shorthand for `paperreel run …`)\n"
+        "Run `paperreel run --help` for full pipeline flags."
+    ),
+)
 console = Console()
 
 
@@ -106,7 +112,241 @@ def _abort(msg: str) -> None:
     raise typer.Exit(code=1)
 
 
+def _fmt_elapsed(s: float) -> str:
+    if s < 60:
+        return f"{s:.1f}s"
+    m = int(s // 60)
+    return f"{m}m {int(s - m * 60)}s"
+
+
+class _Pipeline:
+    """Stage-by-stage runner with spinner + completion lines.
+
+    Why this exists: the full pipeline can take 10+ minutes; without a
+    visible per-stage indicator users can't tell a slow LLM call from
+    a hung process. Each ``.stage()`` shows a spinner while the work
+    runs and a checkmark + elapsed time + optional summary when it
+    finishes. Cached/resumed stages naturally show ~0s elapsed.
+    """
+    def __init__(self, total: int):
+        self.total = total
+        self.idx = 0
+
+    def stage(self, label: str, fn, *, summary=None):
+        self.idx += 1
+        t0 = time.time()
+        with console.status(
+            f"[cyan][{self.idx}/{self.total}] {label}…[/]", spinner="dots"
+        ):
+            result = fn()
+        elapsed = time.time() - t0
+        line = f"[green]✓[/] [{self.idx}/{self.total}] {label}"
+        if summary is not None and result is not None:
+            try:
+                tail = summary(result)
+            except Exception:
+                tail = ""
+            if tail:
+                line += f" — {tail}"
+        line += f"  [dim]({_fmt_elapsed(elapsed)})[/]"
+        console.print(line)
+        return result
+
+
 # ---------- commands ----------
+
+@app.command(name="run")
+def run_pipeline(
+    pdf: str = typer.Argument(..., help="Source PDF path."),
+    project: str = typer.Option(
+        ..., "--project", "-p",
+        help="Project root — will be created or resumed in place."),
+    config: Optional[str] = typer.Option(
+        None, "--config", "-c",
+        help="Config overlay: bundled name (e.g. 'bigvram') or filesystem path."),
+    target_minutes: str = typer.Option(
+        "auto", "--target-minutes",
+        help="'auto' (estimate from PDF length) or an integer (force, e.g. '15')."),
+    max_hours: float = typer.Option(
+        10.0, "--max-hours",
+        help="Wall-time budget; pipeline halts when exceeded (next run resumes)."),
+    force_stage: Optional[str] = typer.Option(
+        None, "--force-stage",
+        help="Comma-separated stages to force re-run, e.g. 'plan,script'."),
+    skip_render: bool = typer.Option(
+        False, "--skip-render",
+        help="Stop after subtitles; skip mp4 mux/concat/quality."),
+) -> None:
+    """Generate a 繁中 教學影片 from a PDF.
+
+    Auto-resumes: re-running on the same --project picks up from the last
+    completed stage. Use --force-stage to redo specific stages.
+
+    Tip: ``paperreel <pdf>`` is a shorthand — the ``main_entry`` wrapper
+    inserts ``run`` for you when the first arg isn't a known subcommand.
+    """
+    _run_full_pipeline(
+        pdf=pdf, project=project, config=config,
+        target_minutes=target_minutes, max_hours=max_hours,
+        force_stage=force_stage, skip_render=skip_render,
+    )
+
+
+def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
+                      target_minutes: str, max_hours: float,
+                      force_stage: Optional[str], skip_render: bool) -> None:
+    if not Path(pdf).exists():
+        _abort(f"PDF not found: {pdf}")
+    p, cfg, db, meta = _ensure_project(
+        project, source_pdf=str(Path(pdf).resolve()), overlay=config,
+    )
+    forced = {s.strip() for s in (force_stage or "").split(",") if s.strip()}
+    start = time.time()
+    pdf_name = Path(meta.source_pdf or pdf).name
+
+    ffmpeg_bin = cfg.get("renderer", {}).get("ffmpeg_binary", "ffmpeg")
+    will_render = (not skip_render) and (shutil.which(ffmpeg_bin) is not None)
+    total = 11 if will_render else 8
+
+    console.print()
+    console.print(f"[bold]PDF[/]      {Path(pdf).resolve()}")
+    console.print(f"[bold]Project[/]  {p['root']}")
+    console.print(f"[bold]Target[/]   {target_minutes} min")
+    console.print(f"[bold]Config[/]   {meta.config_overlay or 'default'}")
+    console.print(
+        f"[bold]Pipeline[/] {total} stages "
+        f"({'render to mp4' if will_render else 'no render — stops after subtitles'})"
+    )
+    if not will_render and not skip_render:
+        console.print(
+            "[yellow]! ffmpeg not on PATH — final render will be skipped. "
+            "Install ffmpeg, then re-run to finish.[/]"
+        )
+    console.print("─" * 60)
+
+    pl = _Pipeline(total=total)
+
+    pl.stage(
+        "解析 PDF",
+        lambda: ingest_pdf.run(
+            pdf_path=pdf, project_root=p["root"], db=db, config=cfg,
+            force="ingest" in forced,
+        ),
+        summary=lambda s: f"{s.page_count} 頁, {s.cjk_char_count} CJK 字, {s.image_count} 圖",
+    )
+    _check_budget(start, max_hours)
+
+    pl.stage(
+        "規劃章節",
+        lambda: build_outline.run(
+            project_root=p["root"], project_name=meta.name, db=db, config=cfg,
+            target_minutes=target_minutes, force="plan" in forced,
+        ),
+        summary=lambda o: f"{len(o.chapters)} 章, {o.target_minutes:.1f} 分鐘",
+    )
+    _check_budget(start, max_hours)
+
+    pl.stage(
+        "寫腳本",
+        lambda: write_script.run(
+            project_root=p["root"], db=db, config=cfg, force="script" in forced,
+        ),
+        summary=lambda sc: f"{len(sc.scenes)} scenes, ~{sc.total_estimated_minutes:.1f} 分鐘",
+    )
+    _check_budget(start, max_hours)
+
+    pl.stage(
+        "組 scene graph",
+        lambda: build_scene_graph.run(
+            project_root=p["root"], project_name=meta.name, pdf_name=pdf_name,
+            db=db, config=cfg, force="scenes" in forced,
+        ),
+        summary=lambda g: f"{len(g.scenes)} scenes",
+    )
+    _check_budget(start, max_hours)
+
+    pl.stage(
+        "配對 PDF 圖片",
+        lambda: match_pdf_visuals.run(project_root=p["root"], db=db, config=cfg),
+        summary=lambda g: (
+            f"{sum(1 for s in g.scenes if s.visual_type.value == 'pdf_image' and s.visual_source_paths)}"
+            f"/{len(g.scenes)} 配到圖"
+        ),
+    )
+    _check_budget(start, max_hours)
+
+    pl.stage(
+        "合成語音",
+        lambda: synthesize_audio.run(
+            project_root=p["root"], db=db, config=cfg, resume=True,
+            max_retries=int(cfg.get("runtime", {}).get("scene_retry_max", 2)),
+        ),
+        summary=lambda g: f"{sum(1 for s in g.scenes if s.audio_path)}/{len(g.scenes)} scenes",
+    )
+    _check_budget(start, max_hours)
+
+    # TTS (coqui-tts) and SDXL share this process and the same GPU. Drop the
+    # TTS-side CUDA allocations / Python refs before loading SDXL — otherwise
+    # the SDXL UNet forward pass occasionally deadlocks on layer_norm with
+    # GPU 0% util, single-thread CPU pegged.
+    _release_gpu()
+
+    pl.stage(
+        "產生視覺",
+        lambda: render_visuals.run(
+            project_root=p["root"], db=db, config=cfg, resume=True,
+        ),
+        summary=lambda g: f"{sum(1 for s in g.scenes if s.visual_asset_paths)}/{len(g.scenes)} scenes",
+    )
+    _check_budget(start, max_hours)
+
+    pl.stage(
+        "建立字幕",
+        lambda: build_subtitles.run(project_root=p["root"], db=db, config=cfg),
+        summary=lambda g: f"{len(g.scenes)} scenes",
+    )
+    _check_budget(start, max_hours)
+
+    if not will_render:
+        console.print()
+        if skip_render:
+            console.print("[yellow]skip-render: 在 subtitles 後停止[/]")
+        else:
+            console.print(
+                f"[yellow]ffmpeg 不在 PATH,跳過後續 render 步驟[/]\n"
+                f"  裝好 ffmpeg 後可只跑後段: "
+                f"paperreel render --project {p['root']}"
+            )
+        return
+
+    pl.stage(
+        "Render scene segments",
+        lambda: render_segments.run(
+            project_root=p["root"], db=db, config=cfg, resume=True,
+        ),
+        summary=lambda r: f"{len(r[1].scenes)} scenes",
+    )
+    _check_budget(start, max_hours)
+
+    final_path = pl.stage(
+        "Concat 最終影片",
+        lambda: concat_final.run(project_root=p["root"], db=db, config=cfg),
+        summary=lambda f: Path(f).name,
+    )
+    _check_budget(start, max_hours)
+
+    pl.stage(
+        "Quality check",
+        lambda: quality_check.run(project_root=p["root"], db=db, config=cfg),
+        summary=lambda r: (
+            f"{r.rendered_scene_count}/{r.scene_count} scenes, "
+            f"{r.final_duration_sec/60:.1f} 分鐘, {len(r.issues)} 問題"
+        ),
+    )
+
+    console.print()
+    console.print(f"[green bold]✓ 完成![/]  輸出: {final_path}")
+
 
 @app.command()
 def init(
@@ -255,86 +495,6 @@ def render(
                   f"issues: {len(report.issues)}")
 
 
-@app.command(name="all")
-def run_all(
-    pdf: str = typer.Argument(..., help="Source PDF path"),
-    project: str = typer.Option(..., "--project", "-p"),
-    config: Optional[str] = typer.Option(None, "--config", "-c"),
-    target_minutes: str = typer.Option("auto", "--target-minutes"),
-    max_hours: float = typer.Option(10.0, "--max-hours"),
-    resume: bool = typer.Option(True, "--resume/--no-resume"),
-    force_stage: Optional[str] = typer.Option(
-        None, "--force-stage",
-        help="Comma-separated stage names to force re-run (e.g. 'plan,script')"),
-    skip_render: bool = typer.Option(False, "--skip-render",
-                                     help="Stop after subtitles (skip segments/concat/quality)"),
-) -> None:
-    """Run the full pipeline. Each stage is resumable via SQLite state."""
-    if not Path(pdf).exists():
-        _abort(f"PDF not found: {pdf}")
-    p, cfg, db, meta = _ensure_project(project, source_pdf=str(Path(pdf).resolve()),
-                                       overlay=config)
-    forced = {s.strip() for s in (force_stage or "").split(",") if s.strip()}
-    start = time.time()
-    pdf_name = Path(meta.source_pdf or pdf).name
-
-    ingest_pdf.run(pdf_path=pdf, project_root=p["root"], db=db, config=cfg,
-                   force="ingest" in forced)
-    _check_budget(start, max_hours)
-
-    build_outline.run(project_root=p["root"], project_name=meta.name, db=db, config=cfg,
-                      target_minutes=target_minutes, force="plan" in forced)
-    _check_budget(start, max_hours)
-
-    write_script.run(project_root=p["root"], db=db, config=cfg,
-                     force="script" in forced)
-    _check_budget(start, max_hours)
-
-    build_scene_graph.run(project_root=p["root"], project_name=meta.name,
-                          pdf_name=pdf_name, db=db, config=cfg,
-                          force="scenes" in forced)
-    _check_budget(start, max_hours)
-
-    # match_visuals is cheap (pure metadata join) and idempotent — always
-    # run it; passing --force-stage match_visuals just re-emits the
-    # matches log.
-    match_pdf_visuals.run(project_root=p["root"], db=db, config=cfg)
-    _check_budget(start, max_hours)
-
-    synthesize_audio.run(project_root=p["root"], db=db, config=cfg, resume=resume,
-                         max_retries=int(cfg.get("runtime", {}).get("scene_retry_max", 2)))
-    _check_budget(start, max_hours)
-
-    # TTS (coqui-tts) and SDXL share this process and the same GPU. Drop the
-    # TTS-side CUDA allocations / Python refs before loading SDXL — otherwise
-    # the SDXL UNet forward pass occasionally deadlocks on layer_norm with
-    # GPU 0% util, single-thread CPU pegged.
-    _release_gpu()
-
-    render_visuals.run(project_root=p["root"], db=db, config=cfg, resume=resume)
-    _check_budget(start, max_hours)
-
-    build_subtitles.run(project_root=p["root"], db=db, config=cfg)
-    _check_budget(start, max_hours)
-
-    if skip_render:
-        console.print("[yellow]skip-render: stopping after subtitles[/yellow]")
-        return
-
-    if shutil.which(cfg.get("renderer", {}).get("ffmpeg_binary", "ffmpeg")) is None:
-        console.print("[yellow]! ffmpeg not on PATH — segments/concat/quality skipped.[/yellow]")
-        console.print("  install ffmpeg then re-run: paperreel render --project " + str(p["root"]))
-        return
-
-    render_segments.run(project_root=p["root"], db=db, config=cfg, resume=resume)
-    _check_budget(start, max_hours)
-    final = concat_final.run(project_root=p["root"], db=db, config=cfg)
-    report = quality_check.run(project_root=p["root"], db=db, config=cfg)
-    console.print(f"[green]✓[/green] final video: {final}")
-    console.print(f"  rendered {report.rendered_scene_count}/{report.scene_count} scenes "
-                  f"({report.final_duration_sec/60:.1f} min, {len(report.issues)} issues)")
-
-
 @app.command()
 def status(
     project: str = typer.Option(..., "--project", "-p"),
@@ -387,5 +547,42 @@ def retry_failed(
     console.print(f"[green]✓[/green] reset {n} failed scenes to pending")
 
 
+# Subcommand names that the bare-PDF wrapper must NOT rewrite. Keep in
+# sync with @app.command(...) registrations above.
+_KNOWN_SUBCOMMANDS = frozenset({
+    "run", "init", "ingest", "plan", "script", "scenes", "match-visuals",
+    "audio", "visuals", "subtitles", "render", "status", "retry-failed",
+})
+
+# Hold a reference to the real Typer instance so the wrapper below can
+# still invoke it after we rebind the public ``app`` symbol.
+_typer_app = app
+
+
+def main_entry() -> None:
+    """Entry point for the ``paperreel`` console script.
+
+    Lets ``paperreel <pdf> [opts]`` work as a shorthand for
+    ``paperreel run <pdf> [opts]``. Typer's callback can't combine a
+    positional argument with subcommand routing (the positional eats the
+    subcommand name before Click can dispatch), so we keep ``run`` as a
+    real subcommand and rewrite ``sys.argv`` here when the user omitted
+    it. Constraint: the PDF must come before any flags in the bare form;
+    users who flag-first should write ``paperreel run …`` explicitly.
+    """
+    import sys
+    args = sys.argv[1:]
+    if args and not args[0].startswith("-") and args[0] not in _KNOWN_SUBCOMMANDS:
+        sys.argv = [sys.argv[0], "run", *args]
+    _typer_app()
+
+
+# Backwards-compat: existing installations whose entry script reads
+# ``from paperreel.cli import app; app()`` should also go through the
+# wrapper — otherwise the bare-PDF form silently regresses for anyone
+# who hasn't reinstalled yet.
+app = main_entry  # type: ignore[assignment]
+
+
 if __name__ == "__main__":
-    app()
+    main_entry()

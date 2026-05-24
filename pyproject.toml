@@ -80,7 +80,7 @@ all = [
 test = ["pytest>=8.0"]
 
 [project.scripts]
-paperreel = "paperreel.cli:app"
+paperreel = "paperreel.cli:main_entry"
 
 [tool.setuptools.packages.find]
 where = ["src"]
