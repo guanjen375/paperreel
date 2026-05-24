@@ -143,6 +143,14 @@ image:
 paperreel ./your_book.pdf --project ./runs/my_video
 ```
 
+不確定有哪些 flag 可以用,先看 help:
+
+```bash
+paperreel --help              # 顯示所有子指令 (run / review / status / …)
+paperreel run --help          # 主管線的完整 flag 列表 (style / depth / target-minutes / …)
+paperreel review --help       # review 子指令的 flag
+```
+
 完整形式 (所有 flag 都填):
 
 ```bash
@@ -179,6 +187,8 @@ paperreel ./contract.pdf --project ./runs/contract \
 ```
 
 額外指令:跑完後想複查就用 `paperreel review`,會在 `outputs/review/` 產出 `contact_sheet.jpg`(縮圖牆)、`storyboard.html`(每張卡片配旁白與出處)、`semantic_quality.json`(自動檢查報告)。
+
+> 提示:任何子指令都可以加 `--help` 看完整參數,例如 `paperreel review --help`、`paperreel run --help`。忘記 flag 名稱時這比翻 README 還快。
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
