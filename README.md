@@ -17,18 +17,34 @@ brew install ffmpeg                          # macOS
 choco install ffmpeg                         # Windows
 ```
 
+Ubuntu 24.04+ / Debian 12+ 預設 Python 走 PEP 668，請先建 venv (或 conda env)，否則 `pip install` 會被擋掉：
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+# 之後本 README 所有 pip / paperreel 指令都在這個 venv 裡跑
+```
+
+> 不想用 venv，也可以在每個 `pip install` 後面加 `--break-system-packages`，但會污染系統 Python。
+
 clone + install：
 
 ```bash
 git clone <this-repo> paperreel && cd paperreel
-pip install -e ".[all]"      # 同時裝 LLM + TTS + SDXL
-# 或單獨裝：
+
+# Coqui 原 TTS 套件最高只到 Python 3.11；Python ≥ 3.12 請改裝社群維護的 fork
+# (套件名不同但 import path 完全一樣，所以程式碼不用改)：
+pip install "coqui-tts>=0.24"
+
+# 然後裝 paperreel；[xtts] extra 暫時跳過，由上面手動裝的 coqui-tts 取代：
+pip install -e ".[ollama,sdxl]"
+
+# 或單獨裝其中一塊：
 pip install -e ".[ollama]"   # 只裝 LLM
-pip install -e ".[xtts]"     # 只裝 TTS
 pip install -e ".[sdxl]"     # 只裝圖片生成
+# TTS 一律走上面 `pip install coqui-tts` 那行
 ```
 
-`[xtts]` 跟 `[sdxl]` 會拉 PyTorch (~2 GB)；建議事先用對應 CUDA 版本的 wheel 裝好 torch，再 `pip install -e .[…]`，避免抓到 CPU-only 版本。
+`coqui-tts` 跟 `[sdxl]` 會拉 PyTorch (~2 GB)；建議事先用對應 CUDA 版本的 wheel 裝好 torch，再裝這兩個，避免抓到 CPU-only 版本。
 
 ---
 
@@ -150,7 +166,7 @@ paperreel all ./your_book.pdf --project ./runs/my_video \
 |---|---|
 | `cannot reach Ollama at http://localhost:11434` | `ollama serve` 沒跑，或 daemon 在別的 host／port — 改 `llm.base_url` |
 | `model not found` / 拉不到 | `ollama pull <model>` 沒做；或 `llm.model` 拼錯 |
-| `Coqui TTS not installed` | `pip install -e ".[xtts]"`；torch 要是 CUDA 版才能用 GPU |
+| `Coqui TTS not installed` | `pip install "coqui-tts>=0.24"` (Python ≥ 3.12 用 fork，原 `TTS` 套件最高到 3.11)；torch 要是 CUDA 版才能用 GPU |
 | `no CUDA GPU detected — SDXL on CPU is impractical` | 換 GPU 機器，或在 config 把 LLM prompt 不要產 `generated_image` (見 §2.3) |
 
 ---
