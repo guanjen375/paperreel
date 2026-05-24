@@ -1,0 +1,46 @@
+# Sketchbook / document_explainer overlay — apply with:
+#   paperreel <pdf> --project ./runs/my_video --style sketchbook
+#   paperreel <pdf> --project ./runs/my_video --config sketchbook
+# Tuned for ordinary public machines: small LLM, no SDXL, deterministic
+# Pillow renderer drives every visual.
+project:
+  style: "sketchbook"
+  depth: "standard"
+
+doc_explainer:
+  allow_generated_images: false
+  auto_match_pdf_figures: false
+  classify:
+    use_llm_refinement: false
+  grounding:
+    require_evidence_for_facts: true
+  crops:
+    enabled: true
+
+# Match-visuals stage is bypassed in sketchbook mode by
+# auto_match_pdf_figures=false above; we also disable SDXL so a stray
+# generated_image type can't accidentally load a 7 GB model.
+visuals:
+  prefer_pdf_figures: false
+
+image:
+  provider: "sdxl"        # provider name is fine; sketchbook never asks for it
+  model: "stabilityai/stable-diffusion-xl-base-1.0"
+  device: "cpu"           # ensure no GPU allocation even if invoked
+  num_inference_steps: 1
+
+# Smaller LLM context is enough — sketchbook prompts are short.
+llm:
+  num_ctx: 6144
+  max_chunk_chars: 6000
+
+# Sketchbook cards stay readable down to 720p, but 1080p is the default.
+renderer:
+  resolution: [1920, 1080]
+  ken_burns: false        # static cards read better; motion can blur text
+  background_color: "#F8FAFB"
+  text_color: "#0F172A"
+  accent_color: "#D97706"
+
+subtitles:
+  max_chars_per_line: 20

@@ -26,6 +26,7 @@ from ..manifest import manifest_matches, sha256_of, write_manifest
 from ..models import Scene, SceneGraph, SceneStatus, VisualType
 from ..providers.image_base import ImageProvider, make_image_provider
 from ..renderers.card_renderer import CardRenderer
+from ..renderers.sketchbook_renderer import SketchbookRenderer
 from ..state import StateDB
 
 
@@ -35,7 +36,13 @@ def paths_for(project_root: str | Path) -> dict[str, Path]:
         "scene_graph": root / "intermediate" / "scene_graph.json",
         "visuals_dir": root / "assets" / "visuals",
         "generated_dir": root / "assets" / "generated",
+        "crops_dir": root / "assets" / "source_crops",
     }
+
+
+def _is_sketchbook(config: dict) -> bool:
+    style = (config.get("project") or {}).get("style") or "default"
+    return str(style).lower() in ("sketchbook", "document_explainer")
 
 
 def _renderer_config_signature(rcfg: dict) -> dict[str, Any]:
@@ -147,11 +154,25 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
         accent=rcfg.get("accent_color", "#22D3EE"),
         font_path=rcfg.get("font_path"),
     )
+    sketchbook = _is_sketchbook(config)
+    de_cfg = config.get("doc_explainer", {}) or {}
+    allow_generated = bool(de_cfg.get("allow_generated_images", False))
+    sketchbook_renderer: SketchbookRenderer | None = None
+    if sketchbook:
+        sketchbook_renderer = SketchbookRenderer(
+            resolution=(int(res[0]), int(res[1])),
+            background=rcfg.get("background_color", "#F8FAFB"),
+            foreground=rcfg.get("text_color", "#0F172A"),
+            accent=rcfg.get("accent_color", "#D97706"),
+            font_path=rcfg.get("font_path"),
+            cards_cfg=de_cfg.get("cards"),
+        )
     db.start_stage(
         "visuals",
-        hash_inputs("visuals_stage_v2",
+        hash_inputs("visuals_stage_v3",
                     _renderer_config_signature(rcfg),
-                    _image_config_signature(icfg)),
+                    _image_config_signature(icfg),
+                    sketchbook, allow_generated),
     )
 
     # Lazily created on first generated_image scene; reused across the whole
@@ -180,6 +201,23 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
     for sc in graph.scenes:
         out_path = p["visuals_dir"] / f"{sc.scene_id}.png"
 
+        # In sketchbook mode the script writer has already populated
+        # scene_kind / layout_payload, so we can render deterministically
+        # without an SDXL / PDF crop step (unless scene_kind is
+        # source_crop, which we still want to handle below).
+        is_sketchbook_scene = bool(sketchbook and sc.scene_kind and
+                                    sketchbook_renderer is not None)
+
+        # Forbid SDXL generation when allow_generated_images is off.
+        # Downgrade to a sketchbook paragraph card or bullet card so the
+        # pipeline keeps going instead of emitting a stale image.
+        if sketchbook and sc.visual_type == VisualType.generated_image and not allow_generated:
+            sc = sc.model_copy(update={
+                "visual_type": VisualType.sketchbook_card,
+                "scene_kind": sc.scene_kind or "paragraph_card",
+            })
+            is_sketchbook_scene = True
+
         # Resume: hash-based skip. Compute the expected hash from the
         # scene's current inputs and compare against the cached card's
         # sidecar manifest. Anything that affects rendered pixels (visual
@@ -201,6 +239,67 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
                 new_scenes.append(sc)
                 continue
         if sc.status == SceneStatus.failed:
+            new_scenes.append(sc)
+            continue
+
+        # Sketchbook fast-path. Render via the deterministic Pillow
+        # SketchbookRenderer for any scene that has scene_kind set.
+        # source_crop scenes also fall through here — their layout
+        # payload contains the crop_path produced by a later helper
+        # (or it falls back to a paragraph card cleanly).
+        if is_sketchbook_scene and sketchbook_renderer is not None:
+            try:
+                sketchbook_renderer.render(sc, out_path)
+            except Exception as e:
+                # Fallback to plain card renderer rather than fail the
+                # pipeline — sketchbook visuals are best-effort.
+                try:
+                    renderer.render_scene(sc, out_path)
+                    sc = sc.model_copy(update={
+                        "last_error": f"sketchbook render fallback: {e!r}",
+                    })
+                except Exception as e2:
+                    sc = sc.model_copy(update={
+                        "status": SceneStatus.failed,
+                        "last_error": f"render failed: {e2!r}",
+                    })
+                    failures.append(sc.scene_id)
+                    db.upsert_scene(sc.scene_id, sc.chapter_id,
+                                    sc.status.value, sc.input_hash,
+                                    sc.model_dump(mode="json"),
+                                    last_error=sc.last_error, bump_retry=True)
+                    new_scenes.append(sc)
+                    continue
+            consumed_src = _source_path_for(sc)
+            consumed_sha = sha256_of(consumed_src)
+            manifest_hash = _visual_input_hash(
+                sc, rcfg, icfg,
+                source_asset_path=consumed_src,
+                source_asset_sha=consumed_sha,
+            )
+            write_manifest(
+                out_path,
+                stage="visuals",
+                scene_id=sc.scene_id,
+                input_hash=manifest_hash,
+                inputs=_visual_inputs(sc, rcfg, icfg,
+                                       source_asset_path=consumed_src,
+                                       source_asset_sha=consumed_sha),
+                extra={"rendered_visual_type": "sketchbook_card",
+                       "scene_kind": sc.scene_kind},
+            )
+            new_status = (SceneStatus.visual_done
+                          if sc.status != SceneStatus.failed else sc.status)
+            sc = sc.model_copy(update={
+                "visual_asset_paths": [str(out_path)],
+                "status": new_status,
+            })
+            db.register_artifact(out_path, stage="visuals",
+                                 scene_id=sc.scene_id, media_type="image/png",
+                                 provenance={"input_hash": manifest_hash,
+                                             "scene_kind": sc.scene_kind})
+            db.upsert_scene(sc.scene_id, sc.chapter_id, sc.status.value,
+                            sc.input_hash, sc.model_dump(mode="json"))
             new_scenes.append(sc)
             continue
 

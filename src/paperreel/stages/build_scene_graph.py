@@ -32,6 +32,11 @@ def _scene_input_hash(narration: str, vt: VisualType, source_pages: list[int],
                        sorted(source_pages), voice, sample_rate)
 
 
+def _is_sketchbook(config: dict) -> bool:
+    style = (config.get("project") or {}).get("style") or "default"
+    return str(style).lower() in ("sketchbook", "document_explainer")
+
+
 def run(*, project_root: str | Path, project_name: str,
         pdf_name: str, db: StateDB, config: dict,
         force: bool = False) -> SceneGraph:
@@ -41,11 +46,12 @@ def run(*, project_root: str | Path, project_name: str,
     tts_cfg = config.get("tts", {})
     voice = str(tts_cfg.get("voice", "default"))
     sample_rate = int(tts_cfg.get("sample_rate_hz", 48000))
+    sketchbook = _is_sketchbook(config)
 
     input_hash = hash_inputs(
-        "scenegraph_v1",
+        "scenegraph_v2",
         script.model_dump(mode="json"),
-        voice, sample_rate,
+        voice, sample_rate, sketchbook,
     )
     outputs = [str(p["scene_graph"])]
     if not force and db.stage_is_done("scenes", input_hash, outputs):
@@ -76,8 +82,18 @@ def run(*, project_root: str | Path, project_name: str,
                 estimated_duration_sec=ss.estimated_duration_sec,
                 input_hash=h,
                 status=SceneStatus.pending,
+                # Carry sketchbook fields through verbatim. Default mode
+                # leaves these empty, which is what the renderer expects.
+                scene_kind=ss.scene_kind,
+                facts=list(ss.facts),
+                evidence_spans=list(ss.evidence_spans),
+                layout_payload=dict(ss.layout_payload),
+                importance=ss.importance,
             ))
-            # Optional recap insertion
+            # Recap insertion only applies to default mode — sketchbook
+            # already places its own recap_card scene at the end.
+            if sketchbook:
+                continue
             if should_insert_recap(
                 i + 1, len(script.scenes),
                 recap_every_minutes=recap_every_min,

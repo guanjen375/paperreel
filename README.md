@@ -148,6 +148,8 @@ paperreel ./your_book.pdf --project ./runs/my_video
 ```bash
 paperreel ./your_book.pdf \
     --project ./runs/my_video \
+    --style sketchbook \
+    --depth standard \
     --target-minutes auto \
     --max-hours 10 \
     --config bigvram \
@@ -155,13 +157,38 @@ paperreel ./your_book.pdf \
     --skip-render
 ```
 
+### 3.1 文件導讀 (sketchbook / document_explainer) 模式
+
+新加的 `sketchbook` (`document_explainer` 同義) 模式是針對合約、表單、報告這類「需要把資訊講清楚而不是配酷炫圖」的場景。所有視覺都是用 Pillow 即時畫出來的時程、罰則表、待辦清單、風險警示等卡片，不會跑 SDXL、不會塞奇怪生成圖、不需要 RTX 5090。
+
+```bash
+# 最小用法：什麼設定都不改,自動偵測文件類型
+paperreel ./contract.pdf --project ./runs/contract --style sketchbook
+
+# 控制時長:depth 三檔(brief 約 2 分鐘、standard 約 5 分鐘、deep 約 10 分鐘)
+paperreel ./contract.pdf --project ./runs/contract \
+    --style sketchbook --depth brief
+
+# 強制特定分鐘數(覆蓋 depth)
+paperreel ./contract.pdf --project ./runs/contract \
+    --style sketchbook --target-minutes 4
+
+# 大型機器搭配 70B 模型 + 較大上下文(仍然不會用 SDXL)
+paperreel ./contract.pdf --project ./runs/contract \
+    --style sketchbook --config highend_sketchbook
+```
+
+額外指令:跑完後想複查就用 `paperreel review`,會在 `outputs/review/` 產出 `contact_sheet.jpg`(縮圖牆)、`storyboard.html`(每張卡片配旁白與出處)、`semantic_quality.json`(自動檢查報告)。
+
 | 參數 | 預設 | 說明 |
 |---|---|---|
 | `<pdf>` | (必填) | 來源 PDF 路徑。**必須放在 flag 前面**(技術限制,看下方說明) |
 | `--project` / `-p` | (必填) | 專案輸出資料夾。第一次跑會自動建立,之後同路徑會自動續跑(不用下 `--resume`) |
+| `--style` | `default` | 影片風格。`default` = 原有的 LLM 教學影片;`sketchbook` / `document_explainer` = 文件導讀卡片風格(時程、罰則表、清單、風險警示) |
+| `--depth` | `standard` | sketchbook 專用。`brief`(約 90–150 秒)、`standard`(約 4–6 分鐘)、`deep`(約 8–12 分鐘);被 `--target-minutes` 覆蓋 |
 | `--target-minutes` | `auto` | 影片目標長度。`auto`=依 PDF 字數估 (PDF 字數 / 2200 chars/min,下限 3 min,上限 120 min);填整數例 `15` 可強制 |
 | `--max-hours` | `10` | 總執行時間上限(小時),超過會中止。下次再跑同一行會自動從斷點接續 |
-| `--config` / `-c` | (不套用) | 內建 overlay 名稱(目前有 `bigvram`)或自己的 yaml 路徑 |
+| `--config` / `-c` | (不套用) | 內建 overlay 名稱(`bigvram`、`sketchbook`、`highend_sketchbook`)或自己的 yaml 路徑 |
 | `--force-stage` | (無) | 逗號分隔的 stage 名,強制重跑這些 stage。例 `--force-stage script,audio` |
 | `--skip-render` | `false` | 跑到 subtitles 就停,不做最後的 mp4 編碼 (適合先確認腳本) |
 

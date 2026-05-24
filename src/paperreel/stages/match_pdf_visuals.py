@@ -142,6 +142,11 @@ def _figures_by_page(images: list[PdfImage]) -> dict[int, list[PdfImage]]:
     return out
 
 
+def _is_sketchbook(config: dict) -> bool:
+    style = (config.get("project") or {}).get("style") or "default"
+    return str(style).lower() in ("sketchbook", "document_explainer")
+
+
 def run(*, project_root: str | Path, db: StateDB,
         config: dict) -> SceneGraph:
     p = paths_for(project_root)
@@ -149,7 +154,16 @@ def run(*, project_root: str | Path, db: StateDB,
     sources = ChunkedSources.model_validate(read_json(p["chunked"]))
 
     vis_cfg = config.get("visuals", {})
-    prefer_figures = bool(vis_cfg.get("prefer_pdf_figures", True))
+    de_cfg = config.get("doc_explainer", {}) or {}
+    sketchbook = _is_sketchbook(config)
+    # In sketchbook mode the auto-matcher is off by default so we don't
+    # accidentally swap a deterministic timeline / penalty card for a
+    # random PDF figure. Users can opt back in via
+    # doc_explainer.auto_match_pdf_figures=true.
+    if sketchbook and not bool(de_cfg.get("auto_match_pdf_figures", False)):
+        prefer_figures = False
+    else:
+        prefer_figures = bool(vis_cfg.get("prefer_pdf_figures", True))
     min_score = float(vis_cfg.get("pdf_figure_min_score", 3.0))
 
     input_hash = hash_inputs(

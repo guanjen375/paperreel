@@ -23,6 +23,42 @@ class VisualType(str, Enum):
     generated_image = "generated_image"
     recap = "recap"
     quiz = "quiz"
+    # Sketchbook / document_explainer kinds. Renderer dispatch happens
+    # via Scene.scene_kind when style=sketchbook; we keep this enum
+    # populated so existing scene_graph.json files that store the value
+    # as visual_type still validate.
+    sketchbook_card = "sketchbook_card"
+
+
+# Document type tags — produced by the heuristic classifier in
+# utils/doc_classify.py and stored in intermediate/doc_profile.json.
+# Storyboard composition depends on this label; "unknown" falls back to
+# the generic paper-style outline.
+class DocKind(str, Enum):
+    contract = "contract"
+    form = "form"
+    paper = "paper"
+    slides = "slides"
+    manual = "manual"
+    report = "report"
+    policy = "policy"
+    unknown = "unknown"
+
+
+# Sub-types of sketchbook scenes. Stored on Scene.scene_kind alongside
+# the legacy visual_type so the existing render_visuals path still
+# works for default-style runs.
+SCENE_KINDS = (
+    "cover", "section_intro", "deadline_timeline", "penalty_table",
+    "checklist", "risk_warning", "do_dont", "recap_card",
+    "paragraph_card", "source_crop", "key_number",
+)
+
+
+class Importance(str, Enum):
+    high = "high"
+    medium = "medium"
+    low = "low"
 
 
 class SceneStatus(str, Enum):
@@ -106,6 +142,27 @@ class ChunkedSources(BaseModel):
     images: list[PdfImage] = []
 
 
+# ---------- document profile ----------
+
+class DocProfile(BaseModel):
+    """Heuristic + optional LLM document classification.
+
+    Written by the document classifier stage; consumed by the script
+    writer to bias storyboard composition (contract -> timeline +
+    penalty table, paper -> problem/method/results, etc.).
+    """
+    model_config = ConfigDict(extra="ignore")
+    doc_kind: DocKind = DocKind.unknown
+    confidence: float = 0.0
+    rationale: str = ""
+    keyword_hits: dict[str, int] = {}
+    # structural_hits is a mix of densities (floats like
+    # avg_cjk_per_page) and integer counts; store as float so neither
+    # side coerces away precision.
+    structural_hits: dict[str, float] = {}
+    suggested_storyboard: list[str] = []
+
+
 # ---------- outline / plan ----------
 
 class ChapterPlan(BaseModel):
@@ -127,6 +184,39 @@ class LessonOutline(BaseModel):
     chapters: list[ChapterPlan]
 
 
+# ---------- evidence / facts ----------
+
+class EvidenceSpan(BaseModel):
+    """One source-grounded quote pulled from a specific PDF page.
+
+    Used by the sketchbook validator to ensure every factual claim
+    has on-disk provenance: page is required and must exist in the
+    ingested ChunkedSources, and quote must appear (normalised) in
+    that page's extracted text.
+    """
+    model_config = ConfigDict(extra="ignore")
+    page: int
+    quote: str
+    label: str | None = None
+    value: str | None = None
+    importance: str | None = None
+
+
+class Fact(BaseModel):
+    """A structured fact extracted from the source.
+
+    The label/value pair is what the deterministic renderer puts on
+    screen. Numbers / dates / fees / percentages must never be invented
+    — they are pulled by the heuristic extractor or quoted by the LLM
+    from evidence spans.
+    """
+    model_config = ConfigDict(extra="ignore")
+    label: str
+    value: str
+    importance: str | None = None
+    evidence_index: int | None = None  # index into Scene.evidence_spans
+
+
 # ---------- script ----------
 
 class ScriptScene(BaseModel):
@@ -141,6 +231,14 @@ class ScriptScene(BaseModel):
     visual_hint: str | None = None
     visual_type: VisualType = VisualType.bullet_card
     estimated_duration_sec: float
+    # Sketchbook / document_explainer additions — optional so default
+    # mode keeps working unchanged. When style=sketchbook, the script
+    # writer populates these and the validator enforces them.
+    scene_kind: str | None = None
+    facts: list[Fact] = []
+    evidence_spans: list[EvidenceSpan] = []
+    layout_payload: dict[str, Any] = {}
+    importance: str | None = None
 
 
 class Script(BaseModel):
@@ -185,6 +283,15 @@ class Scene(BaseModel):
     last_error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Sketchbook / document_explainer additions — optional so default
+    # scene_graph.json files (no scene_kind) keep validating. Renderer
+    # dispatches on scene_kind first when style=sketchbook, falling
+    # back to visual_type otherwise.
+    scene_kind: str | None = None
+    facts: list[Fact] = []
+    evidence_spans: list[EvidenceSpan] = []
+    layout_payload: dict[str, Any] = {}
+    importance: str | None = None
 
 
 class SceneGraph(BaseModel):

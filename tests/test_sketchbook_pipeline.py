@@ -1,0 +1,199 @@
+"""End-to-end sketchbook mode through stage 4 (build_scene_graph), then
+through stage 6 (render_visuals), using fake LLM + fake TTS.
+
+These tests are heavier than the unit tests above — they exercise the
+new branches in build_outline, write_script (sketchbook builder),
+build_scene_graph, render_visuals, and the SketchbookRenderer dispatch.
+"""
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+
+import fitz  # PyMuPDF
+import pytest
+
+from paperreel.config import load_config
+from paperreel.io_utils import read_json
+from paperreel.models import (DocKind, DocProfile, ScriptScene, SceneGraph,
+                                VisualType)
+from paperreel.stages import (build_outline, build_scene_graph, ingest_pdf,
+                                match_pdf_visuals, render_visuals,
+                                review as review_stage, write_script)
+from paperreel.state import StateDB
+
+
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    out = copy.deepcopy(base)
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+@pytest.fixture
+def contract_pdf(tmp_path: Path) -> Path:
+    """Synthetic contract-ish PDF — exercises the contract storyboard."""
+    pdf_path = tmp_path / "contract.pdf"
+    doc = fitz.open()
+    pages = [
+        "第一條 簽約\n"
+        "本合約由甲方與乙方雙方簽署。雙方應於 45 天內完成付款，"
+        "違約金為合約金額的 30%。請提供護照影本與身分證影本。",
+
+        "第二條 取消與退費\n"
+        "若於 30 天前取消，退費 80%；於 14 天前取消，退費 50%；"
+        "於 7 天前取消，退費 20%。逾期不予退款。",
+
+        "第三條 風險與責任\n"
+        "請特別注意天候風險。雙方不得擅自轉讓本契約。"
+        "天候不佳所造成損失，乙方不予賠償。"
+        "若延遲提供資料超過 14 天，視同違約。",
+    ]
+    for text in pages:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((50, 80), text, fontsize=12, fontname="china-s",
+                          color=(0, 0, 0))
+    doc.save(pdf_path)
+    doc.close()
+    return pdf_path
+
+
+@pytest.fixture
+def sketchbook_cfg() -> dict:
+    """sketchbook overlay merged with test-only renderer overrides."""
+    cfg = load_config("sketchbook")
+    overrides = {
+        "tts": {"sample_rate_hz": 24000},
+        "renderer": {"resolution": [1280, 720], "fps": 24},
+        "runtime": {"max_hours": 0.5, "parallelism": 1},
+        # Auto-classifier should pick contract; we don't ask the fake
+        # LLM to refine — saves the cost.
+        "doc_explainer": {
+            "classify": {"use_llm_refinement": False},
+            "grounding": {"quote_match_min_ratio": 0.45},
+        },
+    }
+    return _deep_merge(cfg, overrides)
+
+
+def _drive_through_script(project_dir: Path, pdf: Path,
+                           cfg: dict) -> tuple[StateDB, dict]:
+    db = StateDB(project_dir / "state.sqlite")
+    ingest_pdf.run(pdf_path=pdf, project_root=project_dir, db=db, config=cfg)
+    build_outline.run(project_root=project_dir, project_name=project_dir.name,
+                       db=db, config=cfg, target_minutes="auto")
+    script = write_script.run(project_root=project_dir, db=db, config=cfg)
+    return db, script.model_dump(mode="json")
+
+
+def test_sketchbook_classifies_contract(project_dir: Path, contract_pdf: Path,
+                                          sketchbook_cfg: dict) -> None:
+    _drive_through_script(project_dir, contract_pdf, sketchbook_cfg)
+    profile_path = project_dir / "intermediate" / "doc_profile.json"
+    assert profile_path.exists()
+    profile = DocProfile.model_validate(read_json(profile_path))
+    assert profile.doc_kind == DocKind.contract
+    assert "deadline_timeline" in profile.suggested_storyboard
+
+
+def test_sketchbook_script_has_scene_kinds_and_evidence(
+    project_dir: Path, contract_pdf: Path, sketchbook_cfg: dict,
+) -> None:
+    _drive_through_script(project_dir, contract_pdf, sketchbook_cfg)
+    script_path = project_dir / "intermediate" / "script.json"
+    blob = read_json(script_path)
+    scene_kinds = {sc.get("scene_kind") for sc in blob["scenes"]}
+    assert "cover" in scene_kinds
+    assert "recap_card" in scene_kinds
+    # Contract storyboard should produce at least one factual card.
+    factual = scene_kinds & {"deadline_timeline", "penalty_table",
+                              "checklist", "risk_warning"}
+    assert factual, f"sketchbook contract run had no factual scenes: {scene_kinds}"
+    # Every factual scene must carry at least one evidence span on disk.
+    for sc in blob["scenes"]:
+        if sc.get("scene_kind") in {"deadline_timeline", "penalty_table",
+                                      "checklist", "risk_warning",
+                                      "do_dont", "key_number", "source_crop"}:
+            assert sc["evidence_spans"], (
+                f"scene {sc['scene_id']} ({sc['scene_kind']}) "
+                "has no evidence_spans"
+            )
+
+
+def test_sketchbook_default_forbids_generated_image(
+    project_dir: Path, contract_pdf: Path, sketchbook_cfg: dict,
+) -> None:
+    _drive_through_script(project_dir, contract_pdf, sketchbook_cfg)
+    script_path = project_dir / "intermediate" / "script.json"
+    blob = read_json(script_path)
+    for sc in blob["scenes"]:
+        assert sc["visual_type"] != "generated_image", (
+            f"sketchbook mode produced visual_type=generated_image "
+            f"on scene {sc['scene_id']}"
+        )
+
+
+def test_sketchbook_renders_visuals_via_sketchbook_renderer(
+    project_dir: Path, contract_pdf: Path, sketchbook_cfg: dict,
+) -> None:
+    db, _ = _drive_through_script(project_dir, contract_pdf, sketchbook_cfg)
+    build_scene_graph.run(
+        project_root=project_dir, project_name=project_dir.name,
+        pdf_name=contract_pdf.name, db=db, config=sketchbook_cfg,
+    )
+    # match_visuals must be a no-op in sketchbook (off by default).
+    match_pdf_visuals.run(project_root=project_dir, db=db, config=sketchbook_cfg)
+    # We skip audio + subtitles for this test; render_visuals doesn't
+    # actually need audio paths populated.
+    graph = render_visuals.run(project_root=project_dir, db=db,
+                                config=sketchbook_cfg, resume=False)
+    # Every rendered card lives under assets/visuals.
+    visuals_dir = project_dir / "assets" / "visuals"
+    assert visuals_dir.exists()
+    rendered = list(visuals_dir.glob("*.png"))
+    assert rendered, "render_visuals did not produce any cards"
+    # No SDXL-generated PNGs (sketchbook mode forbids them).
+    generated_dir = project_dir / "assets" / "generated"
+    assert not generated_dir.exists() or not list(generated_dir.glob("*.png"))
+
+
+def test_default_mode_still_works(project_dir: Path, tiny_pdf: Path,
+                                    test_cfg: dict) -> None:
+    """Regression: nothing about adding sketchbook should break the
+    existing default storyboard."""
+    db = StateDB(project_dir / "state.sqlite")
+    ingest_pdf.run(pdf_path=tiny_pdf, project_root=project_dir, db=db,
+                    config=test_cfg)
+    build_outline.run(project_root=project_dir, project_name=project_dir.name,
+                       db=db, config=test_cfg, target_minutes="auto")
+    script = write_script.run(project_root=project_dir, db=db, config=test_cfg)
+    assert script.scenes
+    # No scene_kind tags in default mode.
+    for sc in script.scenes:
+        assert sc.scene_kind is None
+    db.close()
+
+
+def test_review_stage_produces_artefacts(
+    project_dir: Path, contract_pdf: Path, sketchbook_cfg: dict,
+) -> None:
+    db, _ = _drive_through_script(project_dir, contract_pdf, sketchbook_cfg)
+    build_scene_graph.run(
+        project_root=project_dir, project_name=project_dir.name,
+        pdf_name=contract_pdf.name, db=db, config=sketchbook_cfg,
+    )
+    match_pdf_visuals.run(project_root=project_dir, db=db, config=sketchbook_cfg)
+    render_visuals.run(project_root=project_dir, db=db, config=sketchbook_cfg,
+                        resume=False)
+    summary = review_stage.run(project_root=project_dir, db=db,
+                                 config=sketchbook_cfg)
+    assert summary["scene_count"] > 0
+    review_dir = project_dir / "outputs" / "review"
+    assert (review_dir / "semantic_quality.json").exists()
+    assert (review_dir / "storyboard.html").exists()
+    # Contact sheet should exist because visuals were rendered.
+    assert (review_dir / "contact_sheet.jpg").exists()

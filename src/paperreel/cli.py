@@ -28,7 +28,7 @@ from .models import ProjectMeta
 from .stages import (build_outline, build_scene_graph, build_subtitles,
                      concat_final, ingest_pdf, match_pdf_visuals,
                      quality_check, render_segments, render_visuals,
-                     synthesize_audio, write_script)
+                     review as review_stage, synthesize_audio, write_script)
 from .state import StateDB
 
 app = typer.Typer(
@@ -77,7 +77,9 @@ def _project_paths(project: str | Path) -> dict[str, Path]:
 
 def _ensure_project(project: str | Path, *,
                     source_pdf: str | None = None,
-                    overlay: str | None = None) -> tuple[dict[str, Path], dict, StateDB, ProjectMeta]:
+                    overlay: str | None = None,
+                    style: str | None = None,
+                    depth: str | None = None) -> tuple[dict[str, Path], dict, StateDB, ProjectMeta]:
     p = _project_paths(project)
     for k in ("root", "intermediate", "assets", "outputs", "logs"):
         ensure_dir(p[k])
@@ -91,12 +93,24 @@ def _ensure_project(project: str | Path, *,
             meta = meta.model_copy(update={"source_pdf": source_pdf})
             atomic_write_json(p["meta"], meta.model_dump(mode="json"))
     cfg = load_config(overlay or meta.config_overlay)
+    if style:
+        cfg.setdefault("project", {})["style"] = _normalize_style(style)
+    if depth:
+        cfg.setdefault("project", {})["depth"] = depth.lower()
     db = StateDB(p["db"])
     db.upsert_project(meta.name, str(meta.root),
                       source_pdf=meta.source_pdf,
                       config_overlay=meta.config_overlay,
                       meta=meta.model_dump(mode="json"))
     return p, cfg, db, meta
+
+
+def _normalize_style(s: str) -> str:
+    s = s.lower().strip()
+    if s in ("sketchbook", "document_explainer", "document-explainer",
+              "doc_explainer", "explainer"):
+        return "sketchbook" if s == "sketchbook" else "document_explainer"
+    return s
 
 
 def _check_budget(start_ts: float, max_hours: float) -> None:
@@ -252,10 +266,20 @@ def run_pipeline(
         help="Project root — will be created or resumed in place."),
     config: Optional[str] = typer.Option(
         None, "--config", "-c",
-        help="Config overlay: bundled name (e.g. 'bigvram') or filesystem path."),
+        help="Config overlay: bundled name (e.g. 'bigvram', 'sketchbook', "
+             "'highend_sketchbook') or filesystem path."),
+    style: Optional[str] = typer.Option(
+        None, "--style",
+        help="Storyboard style: default | sketchbook | document_explainer. "
+             "Overrides whatever the chosen --config sets."),
+    depth: Optional[str] = typer.Option(
+        None, "--depth",
+        help="Sketchbook depth: brief | standard | deep. Drives default "
+             "duration when --target-minutes is not set."),
     target_minutes: str = typer.Option(
         "auto", "--target-minutes",
-        help="'auto' (estimate from PDF length) or an integer (force, e.g. '15')."),
+        help="'auto' (estimate from PDF length, default mode) or an "
+             "integer that overrides depth-based duration."),
     max_hours: float = typer.Option(
         10.0, "--max-hours",
         help="Wall-time budget; pipeline halts when exceeded (next run resumes)."),
@@ -280,6 +304,7 @@ def run_pipeline(
     """
     _run_full_pipeline(
         pdf=pdf, project=project, config=config,
+        style=style, depth=depth,
         target_minutes=target_minutes, max_hours=max_hours,
         force_stage=force_stage, skip_render=skip_render,
         quiet_ollama=quiet_ollama,
@@ -289,11 +314,14 @@ def run_pipeline(
 def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
                       target_minutes: str, max_hours: float,
                       force_stage: Optional[str], skip_render: bool,
-                      quiet_ollama: bool = False) -> None:
+                      quiet_ollama: bool = False,
+                      style: Optional[str] = None,
+                      depth: Optional[str] = None) -> None:
     if not Path(pdf).exists():
         _abort(f"PDF not found: {pdf}")
     p, cfg, db, meta = _ensure_project(
         project, source_pdf=str(Path(pdf).resolve()), overlay=config,
+        style=style, depth=depth,
     )
     forced = {s.strip() for s in (force_stage or "").split(",") if s.strip()}
     start = time.time()
@@ -303,9 +331,14 @@ def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
     will_render = (not skip_render) and (shutil.which(ffmpeg_bin) is not None)
     total = 11 if will_render else 8
 
+    project_cfg = cfg.get("project") or {}
+    eff_style = project_cfg.get("style") or "default"
+    eff_depth = project_cfg.get("depth") or "standard"
+
     console.print()
     console.print(f"[bold]PDF[/]      {Path(pdf).resolve()}")
     console.print(f"[bold]Project[/]  {p['root']}")
+    console.print(f"[bold]Style[/]    {eff_style}  ([dim]depth={eff_depth}[/])")
     console.print(f"[bold]Target[/]   {target_minutes} min")
     console.print(f"[bold]Config[/]   {meta.config_overlay or 'default'}")
     console.print(
@@ -668,11 +701,35 @@ def retry_failed(
     console.print(f"[green]✓[/green] reset {n} failed scenes to pending")
 
 
+@app.command()
+def review(
+    project: str = typer.Option(..., "--project", "-p"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+    style: Optional[str] = typer.Option(None, "--style"),
+    depth: Optional[str] = typer.Option(None, "--depth"),
+) -> None:
+    """Generate outputs/review/{contact_sheet.jpg, storyboard.html,
+    semantic_quality.json} so you can eyeball pacing + layout without
+    sitting through the whole rendered mp4."""
+    p, cfg, db, _ = _ensure_project(project, overlay=config,
+                                     style=style, depth=depth)
+    summary = review_stage.run(project_root=p["root"], db=db, config=cfg)
+    console.print(
+        f"[green]✓[/green] review summary written\n"
+        f"  storyboard:   {summary['artefacts']['storyboard']}\n"
+        f"  contact:      {summary['artefacts'].get('contact_sheet')}\n"
+        f"  findings:     {len(summary['findings'])} "
+        f"({sum(1 for f in summary['findings'] if f['severity'] == 'error')} error / "
+        f"{sum(1 for f in summary['findings'] if f['severity'] == 'warning')} warning)"
+    )
+
+
 # Subcommand names that the bare-PDF wrapper must NOT rewrite. Keep in
 # sync with @app.command(...) registrations above.
 _KNOWN_SUBCOMMANDS = frozenset({
     "run", "init", "ingest", "plan", "script", "scenes", "match-visuals",
     "audio", "visuals", "subtitles", "render", "status", "retry-failed",
+    "review",
 })
 
 # Hold a reference to the real Typer instance so the wrapper below can

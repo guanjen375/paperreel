@@ -5,6 +5,64 @@
 project:
   name: "paperreel-run"
   language: "zh-TW"
+  # Storyboard / renderer style.
+  #   default            — original LLM-driven bullet/diagram/recap pipeline.
+  #   sketchbook         — document-grounded explainer with deterministic
+  #                        layouts (timeline, penalty table, checklist,
+  #                        risk/warning, do/don't, source quote).
+  #   document_explainer — alias for sketchbook, kept so `--style
+  #                        document_explainer` works exactly the same.
+  style: "default"
+  # brief | standard | deep — drives default duration when --target-minutes
+  # is not set. brief ≈ 90-150s, standard ≈ 4-6 min, deep ≈ 8-12 min.
+  depth: "standard"
+
+# Document_explainer / sketchbook tuning. Only consulted when
+# `project.style` is sketchbook or document_explainer; otherwise inert.
+doc_explainer:
+  # Generated SDXL images are factually unreliable and can drown out
+  # the actual content. Off by default for this style; only flip on
+  # if you have a custom prompt set you trust to stay neutral.
+  allow_generated_images: false
+  # Skip auto-matching extracted PDF figures to scenes — sketchbook
+  # picks figures via explicit source_crop scenes only.
+  auto_match_pdf_figures: false
+  # Heuristic document classifier; optional LLM refinement is gated
+  # behind `use_llm_refinement` and stays off by default for speed.
+  classify:
+    use_llm_refinement: false
+    min_confidence: 0.3
+  # Source-grounding hard requirements.
+  grounding:
+    require_evidence_for_facts: true
+    quote_match_min_ratio: 0.55   # normalized substring fuzzy match
+    max_repair_attempts: 1
+  # Renderer knobs specific to sketchbook cards. Card width / padding
+  # is derived from renderer.resolution; these are mostly about how
+  # much text fits per card before we split.
+  cards:
+    max_chars_title: 18
+    max_chars_subtitle: 28
+    max_chars_paragraph: 90
+    max_chars_per_bullet: 24
+    max_bullets: 6
+    max_timeline_events: 6
+    max_table_rows: 6
+    max_checklist_items: 8
+  # Source PDF crop / highlight settings (Phase 5). PyMuPDF crop is
+  # cached by (pdf_sha, page, bbox, settings) under assets/source_crops.
+  crops:
+    enabled: true
+    target_dpi: 220
+    padding_pt: 18
+    min_readable_height_pt: 80
+  # Local VLM review (optional, off by default). When configured with a
+  # model name the review stage will use Ollama to inspect each rendered
+  # card. Absence of the model must not break the pipeline.
+  vlm_review:
+    enabled: false
+    model: null
+    base_url: "http://localhost:11434"
 
 duration:
   # 中文旁白速度 (字/分鐘)

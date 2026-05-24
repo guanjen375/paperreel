@@ -206,3 +206,52 @@ class OllamaLLM(LLMProvider):
                 "write_chapter_script: model returned no scenes"
             )
         return scenes
+
+    # ---------- sketchbook (optional) ----------
+
+    def classify_document(self, *, sample: str, heuristic: dict) -> dict:
+        """Confirm or override the heuristic doc_kind label.
+
+        Used only when ``doc_explainer.classify.use_llm_refinement`` is
+        on. Returns a dict shaped like ``{"doc_kind": "..."}``.
+        Failures here are non-fatal — the caller already has a
+        heuristic classification it can use.
+        """
+        prompt = (
+            "請判斷以下文件屬於哪一類，只回傳 JSON,例如 "
+            "{\"doc_kind\":\"contract\"}\n"
+            "可選類別: contract, form, paper, manual, report, policy, slides, unknown\n"
+            f"啟發式偵測結果: {json.dumps(heuristic, ensure_ascii=False)}\n"
+            "---\n"
+            f"文件節錄:\n{sample[:6000]}"
+        )
+        out = self._ask_json(prompt, max_tokens=120)
+        return out if isinstance(out, dict) else {}
+
+    def polish_sketchbook_narration(self, *, scene: dict,
+                                     page_text: dict[int, str]) -> str:
+        """Rewrite narration_text_zh_tw without changing any concrete
+        fact value (numbers / dates / fees / percentages).
+
+        Returns the polished string, or the original on failure. The
+        caller does the "did the rewrite preserve all facts" check so
+        we don't need to repeat it here.
+        """
+        facts = scene.get("facts") or []
+        original = scene.get("narration_text_zh_tw", "")
+        if not original:
+            return original
+        prompt = (
+            "請改寫以下教學影片旁白，只能調整語氣與流暢度，"
+            "嚴禁修改、新增、刪除任何數字、日期、金額、百分比、人物或地點名稱。\n"
+            "輸出 JSON: {\"narration_text_zh_tw\": \"...\"}\n"
+            f"必須保留的關鍵字: {json.dumps([f.get('value', '') for f in facts], ensure_ascii=False)}\n"
+            f"原始旁白:\n{original}\n"
+            f"來源頁面:\n{json.dumps({str(k): v[:600] for k, v in page_text.items()}, ensure_ascii=False)}"
+        )
+        out = self._ask_json(prompt, max_tokens=800)
+        if isinstance(out, dict):
+            new_text = out.get("narration_text_zh_tw") or out.get("narration") or ""
+            if isinstance(new_text, str) and new_text.strip():
+                return new_text.strip()
+        return original
