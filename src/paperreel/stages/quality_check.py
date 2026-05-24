@@ -6,6 +6,11 @@ Checks:
   - every scene has audio + (subtitle if requested)
   - missing assets are listed
   - flag verbatim-overlap > warn_verbatim_pct
+  - PDF pages that came back empty (no extractable text and no OCR
+    result) — these vanish silently into the script otherwise
+  - PDF pages that used OCR — informational, surfaces accuracy risk
+  - high empty-page ratio — likely scanned PDF needing the [ocr]
+    extra installed
 """
 from __future__ import annotations
 
@@ -38,6 +43,7 @@ def run(*, project_root: str | Path, db: StateDB, config: dict) -> QualityReport
     qcfg = config.get("quality", {})
     tol_pct = float(qcfg.get("duration_tolerance_pct", 8.0))
     warn_v_pct = float(qcfg.get("warn_verbatim_pct", 5.0))
+    empty_warn_pct = float(qcfg.get("empty_pages_warn_pct", 20.0))
 
     input_hash = hash_inputs("quality_v1", graph.project,
                              [s.scene_id for s in graph.scenes],
@@ -49,6 +55,49 @@ def run(*, project_root: str | Path, db: StateDB, config: dict) -> QualityReport
         issues: list[QualityIssue] = []
         failed_ids: list[str] = []
         rendered = 0
+
+        # Surface PDF-side coverage issues first: empty pages disappear
+        # from the script entirely, and a scanned-style PDF with no OCR
+        # installed will quietly produce a near-empty video. Both are
+        # easy to miss until the user previews `final.mp4`.
+        empty_pages = [p.page for p in sources.pages
+                        if p.text_source == "empty"]
+        ocr_pages = [p.page for p in sources.pages
+                      if p.text_source == "ocr"]
+        if empty_pages:
+            preview = empty_pages[:20]
+            more = "" if len(empty_pages) <= 20 else f", ... ({len(empty_pages)} total)"
+            issues.append(QualityIssue(
+                severity="warning", code="empty_pdf_pages",
+                message=(
+                    f"{len(empty_pages)} PDF pages had no extractable text "
+                    f"and no OCR result: {preview}{more}. Install the "
+                    "`[ocr]` extra and a tesseract language pack if this "
+                    "is a scanned PDF."
+                ),
+            ))
+        if ocr_pages:
+            preview = ocr_pages[:20]
+            more = "" if len(ocr_pages) <= 20 else f", ... ({len(ocr_pages)} total)"
+            issues.append(QualityIssue(
+                severity="info", code="ocr_pages",
+                message=(
+                    f"{len(ocr_pages)} PDF pages used OCR fallback: "
+                    f"{preview}{more}. Review the narration for those pages "
+                    "— OCR can mis-read footnotes and equations."
+                ),
+            ))
+        if sources.pages:
+            empty_ratio_pct = 100.0 * len(empty_pages) / len(sources.pages)
+            if empty_ratio_pct >= empty_warn_pct:
+                issues.append(QualityIssue(
+                    severity="warning", code="many_empty_pages",
+                    message=(
+                        f"{empty_ratio_pct:.0f}% of PDF pages produced no "
+                        f"text (limit {empty_warn_pct:.0f}%). The video "
+                        "likely under-covers the source."
+                    ),
+                ))
 
         pdf_full_text = " ".join(pg.text for pg in sources.pages)
 
