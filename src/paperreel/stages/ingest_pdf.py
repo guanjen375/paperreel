@@ -230,14 +230,29 @@ def run(
     ocr_dpi = int(ingest_cfg.get("ocr_dpi", 200))
 
     pdf_sha = sha256_file(pdf_path)
-    # Bump to v2 so existing projects pick up the new schema (text_source,
-    # bbox, caption_hint on PdfImage) instead of reusing a stale
-    # chunked_sources.json that pre-dates these fields.
+    # Capture the OCR environment, not just availability — installing a
+    # missing language pack (e.g. `apt install tesseract-ocr-chi-tra`)
+    # has to invalidate the cache, otherwise a first run that produced
+    # empty pages would be served back on the next call instead of
+    # re-OCRing with the new pack.
+    ocr_env_sig: dict[str, Any] | None = None
+    if ocr_enabled:
+        ocr_available = ocr_mod.is_available()
+        ocr_env_sig = {
+            "available": ocr_available,
+            "missing_langs": (
+                list(ocr_mod.missing_languages(ocr_lang))
+                if ocr_available
+                else []
+            ),
+        }
+    # Bump to v3: OCR environment signature now folded into the hash so
+    # installing language packs invalidates the cache. (v2 added the
+    # text_source / bbox / caption_hint schema fields.)
     input_hash = hash_inputs(
-        "ingest_v2", pdf_sha, ingest_cfg,
+        "ingest_v3", pdf_sha, ingest_cfg,
         llm_cfg.get("max_chunk_chars"),
-        ocr_enabled, ocr_min_chars, ocr_lang, ocr_dpi,
-        ocr_mod.is_available() if ocr_enabled else False,
+        ocr_env_sig,
     )
     outputs = [str(paths.chunked_json)]
 

@@ -189,8 +189,11 @@ def match_visuals(
     """Assign extracted PDF figures to matching scenes."""
     p, cfg, db, _ = _ensure_project(project, overlay=config)
     g = match_pdf_visuals.run(project_root=p["root"], db=db, config=cfg)
+    # Count matches on visual_source_paths (the upstream figure input) —
+    # visual_asset_paths only gets populated later by render_visuals, so
+    # running this command standalone would print 0/N otherwise.
     matched = sum(1 for s in g.scenes
-                  if s.visual_type.value == "pdf_image" and s.visual_asset_paths)
+                  if s.visual_type.value == "pdf_image" and s.visual_source_paths)
     console.print(f"[green]✓[/green] matched {matched}/{len(g.scenes)} "
                   f"scenes to PDF figures")
 

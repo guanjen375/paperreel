@@ -15,9 +15,11 @@ images by:
    a small score penalty so other scenes prefer fresh figures.
 
 The best-scoring figure (if it clears a minimum threshold) is attached
-to the scene's ``visual_asset_paths`` and the scene's ``visual_type``
-is upgraded to :attr:`VisualType.pdf_image` so the renderer treats it
-as a figure-card. Scenes with no good match are left untouched.
+to the scene's ``visual_source_paths`` (the upstream input field —
+``visual_asset_paths`` holds the renderer's output, populated later by
+``render_visuals``) and the scene's ``visual_type`` is upgraded to
+:attr:`VisualType.pdf_image` so the renderer treats it as a figure-card.
+Scenes with no good match are left untouched.
 
 Disabled when the project config has ``visuals.prefer_pdf_figures:
 false``.

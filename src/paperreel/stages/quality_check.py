@@ -19,10 +19,21 @@ from pathlib import Path
 from ..hashing import hash_inputs
 from ..io_utils import atomic_write_json, read_json
 from ..models import (ChunkedSources, QualityIssue, QualityReport,
-                      SceneGraph, SceneStatus)
+                      SceneGraph, SceneStatus, VisualType)
 from ..renderers.ffmpeg_renderer import have_ffmpeg, probe_duration_seconds
 from ..state import StateDB
 from ..utils.text_cleaning import verbatim_overlap_ratio
+
+
+def _missing_file(path: str | None) -> bool:
+    """True when ``path`` is empty/None or doesn't point to a real file.
+
+    Used so the quality report catches stale artefact paths — a JSON
+    field can hold a string that no longer exists on disk (e.g. user
+    cleared ``assets/audio`` to free space), and silently passing the
+    field-set check would let the issue surface only at render time.
+    """
+    return not path or not Path(path).exists()
 
 
 def paths_for(project_root: str | Path) -> dict[str, Path]:
@@ -118,7 +129,11 @@ def run(*, project_root: str | Path, db: StateDB, config: dict) -> QualityReport
                     message="scene has no source_pages — provenance broken",
                     scene_id=sc.scene_id,
                 ))
-            if not sc.audio_path:
+            # Field-set checks alone miss stale paths — a JSON pointing at
+            # a deleted file still passes ``if sc.audio_path`` but the
+            # renderer (or the final video) will fail. Verify the file
+            # actually exists.
+            if _missing_file(sc.audio_path):
                 issues.append(QualityIssue(
                     severity="error", code="missing_audio",
                     message="audio asset missing", scene_id=sc.scene_id,
@@ -128,10 +143,30 @@ def run(*, project_root: str | Path, db: StateDB, config: dict) -> QualityReport
                     severity="warning", code="missing_subtitle",
                     message="subtitle file missing", scene_id=sc.scene_id,
                 ))
-            if not sc.visual_asset_paths:
+            elif not Path(sc.subtitle_path).exists():
+                # Path recorded, file gone — separate code so the user can
+                # tell "never generated" apart from "deleted after run".
+                issues.append(QualityIssue(
+                    severity="warning", code="missing_subtitle_file",
+                    message=f"subtitle path recorded but file is gone: {sc.subtitle_path}",
+                    scene_id=sc.scene_id,
+                ))
+            if (not sc.visual_asset_paths
+                    or not Path(sc.visual_asset_paths[0]).exists()):
                 issues.append(QualityIssue(
                     severity="error", code="missing_visual",
                     message="visual asset missing", scene_id=sc.scene_id,
+                ))
+            if sc.visual_type == VisualType.pdf_image and (
+                    not sc.visual_source_paths
+                    or not Path(sc.visual_source_paths[0]).exists()):
+                # The card on disk may exist, but for pdf_image scenes the
+                # source crop is the upstream provenance — without it a
+                # re-render can't reproduce the card.
+                issues.append(QualityIssue(
+                    severity="warning", code="missing_visual_source",
+                    message="pdf_image scene is missing its source figure on disk",
+                    scene_id=sc.scene_id,
                 ))
             ratio = verbatim_overlap_ratio(sc.narration_text_zh_tw, pdf_full_text)
             if ratio * 100.0 > warn_v_pct:

@@ -204,36 +204,59 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
             new_scenes.append(sc)
             continue
 
-        # 1) For generated_image scenes, run SDXL into assets/generated/<id>.png
-        #    when we don't already have a source on disk. The result lands
-        #    in visual_source_paths — the card renderer reads from there.
-        if sc.visual_type == VisualType.generated_image and not (
-            sc.visual_source_paths
-            and Path(sc.visual_source_paths[0]).exists()
-        ):
-            if image_provider is None and not image_provider_failed:
-                try:
-                    image_provider = make_image_provider(icfg)
-                except Exception:
-                    image_provider_failed = True
+        # 1) For generated_image scenes, run SDXL into assets/generated/<id>.png.
+        #    The SDXL source has its own manifest (independent of the final
+        #    card manifest) — without it, changing image.model / steps /
+        #    guidance after a first run would re-render the card but reuse
+        #    the stale PNG underneath. The final card manifest would then
+        #    record the new image config alongside the old image's SHA, a
+        #    "false valid" cache hit. With this manifest the cached source
+        #    invalidates as soon as any SDXL-pixel-affecting field changes.
+        if sc.visual_type == VisualType.generated_image:
             gen_path = p["generated_dir"] / f"{sc.scene_id}.png"
-            sdxl_src = (
-                _generate_sdxl_asset(sc, gen_path, image_provider,
-                                     (int(res[0]), int(res[1])))
-                if image_provider is not None
-                else None
-            )
-            _drop_gpu_scratch()
-            if sdxl_src:
-                sc = sc.model_copy(update={"visual_source_paths": [sdxl_src]})
-                db.register_artifact(Path(sdxl_src), stage="visuals",
-                                     scene_id=sc.scene_id,
-                                     media_type="image/png",
-                                     provenance={"role": "sdxl_source",
-                                                 "model": icfg.get("model")})
+            source_inputs: dict[str, Any] = {
+                "schema": "generated_source_v1",
+                "scene_id": sc.scene_id,
+                "visual_prompt": sc.visual_prompt,
+                "image": _image_config_signature(icfg),
+                "resolution": [int(res[0]), int(res[1])],
+            }
+            source_hash = hash_inputs("generated_source_v1", source_inputs)
+            needs_generate = not manifest_matches(gen_path, source_hash)
+            if not needs_generate:
+                sc = sc.model_copy(update={"visual_source_paths": [str(gen_path)]})
             else:
-                # Downgrade so card renderer takes over.
-                sc = sc.model_copy(update={"visual_type": VisualType.bullet_card})
+                if image_provider is None and not image_provider_failed:
+                    try:
+                        image_provider = make_image_provider(icfg)
+                    except Exception:
+                        image_provider_failed = True
+                sdxl_src = (
+                    _generate_sdxl_asset(sc, gen_path, image_provider,
+                                         (int(res[0]), int(res[1])))
+                    if image_provider is not None
+                    else None
+                )
+                _drop_gpu_scratch()
+                if sdxl_src:
+                    write_manifest(
+                        Path(sdxl_src),
+                        stage="visual_source",
+                        scene_id=sc.scene_id,
+                        input_hash=source_hash,
+                        inputs=source_inputs,
+                        extra={"image_model": icfg.get("model")},
+                    )
+                    sc = sc.model_copy(update={"visual_source_paths": [sdxl_src]})
+                    db.register_artifact(Path(sdxl_src), stage="visuals",
+                                         scene_id=sc.scene_id,
+                                         media_type="image/png",
+                                         provenance={"role": "sdxl_source",
+                                                     "model": icfg.get("model"),
+                                                     "source_hash": source_hash})
+                else:
+                    # Downgrade so card renderer takes over.
+                    sc = sc.model_copy(update={"visual_type": VisualType.bullet_card})
 
         # 2) PDF-image visuals require the source crop to exist on disk.
         if sc.visual_type == VisualType.pdf_image:
