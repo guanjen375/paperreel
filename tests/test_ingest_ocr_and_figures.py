@@ -87,6 +87,54 @@ def test_is_available_returns_bool() -> None:
     assert isinstance(ocr_mod.is_available(), bool)
 
 
+def test_missing_languages_handles_no_tesseract(monkeypatch) -> None:
+    """When Tesseract isn't installed, the helper returns () rather than
+    pretending every language is missing — caller uses is_available()
+    for the binary check."""
+    monkeypatch.setattr(ocr_mod, "is_available", lambda: False)
+    assert ocr_mod.missing_languages("chi_tra+eng") == ()
+
+
+@pytest.mark.skipif(not ocr_mod.is_available(),
+                     reason="Tesseract or pytesseract not available")
+def test_ocr_page_real_path_returns_text(tmp_path: Path) -> None:
+    """Real-path test — no monkeypatch on ocr_page. Proves the
+    PyMuPDF -> PIL -> Tesseract pipeline actually works end-to-end.
+    Catches bugs (e.g. wrong attribute access on page.parent) that
+    monkeypatched fast-path tests can't see."""
+    import fitz
+    from PIL import Image, ImageDraw, ImageFont
+
+    # Build a bitmap with big, high-contrast Latin text so Tesseract
+    # without language packs can still read it.
+    img_path = tmp_path / "page_bitmap.png"
+    img = Image.new("RGB", (1200, 600), color=(255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
+    except Exception:
+        font = ImageFont.load_default()
+    draw.text((40, 200), "HELLO PAPERREEL", fill=(0, 0, 0), font=font)
+    img.save(img_path)
+
+    pdf_path = tmp_path / "page_bitmap.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_image(fitz.Rect(0, 0, 595, 842), filename=str(img_path))
+    doc.save(pdf_path)
+    doc.close()
+
+    doc = fitz.open(pdf_path)
+    try:
+        # Use eng so we don't fail when chi_tra/chi_sim aren't installed.
+        text = ocr_mod.ocr_page(doc[0], lang="eng", dpi=200)
+    finally:
+        doc.close()
+    assert "HELLO" in text.upper() or "PAPERREEL" in text.upper(), (
+        f"OCR returned no recognisable text: {text!r}"
+    )
+
+
 def test_ocr_page_raises_helpful_error_without_pytesseract(monkeypatch) -> None:
     """If pytesseract is uninstalled, ``ocr_page`` should fail loudly
     rather than silently returning empty — the caller (ingest) chooses

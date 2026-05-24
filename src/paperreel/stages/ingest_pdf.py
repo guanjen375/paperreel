@@ -297,14 +297,29 @@ def run(
                 images=images,
             )
             atomic_write_json(paths.chunked_json, sources.model_dump(mode="json"))
+            ocr_status = {
+                "ocr_enabled": ocr_enabled,
+                "ocr_available": ocr_mod.is_available() if ocr_enabled else False,
+            }
+            if ocr_enabled and ocr_mod.is_available():
+                missing = ocr_mod.missing_languages(ocr_lang)
+                if missing:
+                    # Surface in DB + a log line so the user can fix it
+                    # before sinking time into a long run that produces
+                    # empty pages.
+                    ocr_status["missing_ocr_langs"] = list(missing)
+                    db.log_error(
+                        "ingest",
+                        f"OCR enabled but Tesseract is missing language pack(s): "
+                        f"{missing!r}. Install via your OS package manager "
+                        f"(e.g. `apt install tesseract-ocr-chi-tra`) — OCR will "
+                        f"return empty strings until then.",
+                    )
             db.register_artifact(paths.chunked_json, stage="ingest",
                                  media_type="application/json",
                                  provenance={"source_pdf": str(pdf_path),
                                              "pdf_sha256": pdf_sha,
-                                             "ocr_enabled": ocr_enabled,
-                                             "ocr_available":
-                                                 ocr_mod.is_available()
-                                                 if ocr_enabled else False})
+                                             **ocr_status})
             for im in images:
                 db.register_artifact(im.path, stage="ingest",
                                      media_type=f"image/{img_fmt}",

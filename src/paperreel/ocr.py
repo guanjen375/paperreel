@@ -40,6 +40,31 @@ def is_available() -> bool:
     return True
 
 
+@lru_cache(maxsize=8)
+def installed_languages() -> tuple[str, ...]:
+    """Languages Tesseract can use. Empty tuple if Tesseract isn't
+    installed. Cached because querying tesseract is a subprocess."""
+    if not is_available():
+        return ()
+    try:
+        import pytesseract  # type: ignore
+        return tuple(pytesseract.get_languages(config=""))
+    except Exception:
+        return ()
+
+
+def missing_languages(required: str) -> tuple[str, ...]:
+    """Return the language packs from a ``+``-joined spec (e.g.
+    ``chi_tra+eng``) that aren't installed locally. Empty tuple when
+    everything's available or Tesseract isn't even installed (the
+    latter case is caught by :func:`is_available` upstream)."""
+    if not is_available():
+        return ()
+    want = [p.strip() for p in required.split("+") if p.strip()]
+    have = set(installed_languages())
+    return tuple(p for p in want if p not in have)
+
+
 def ocr_page(page: Any, *, lang: str = "chi_tra+chi_sim+eng",
              dpi: int = 200) -> str:
     """OCR one PyMuPDF page and return the recognised text.
@@ -50,11 +75,17 @@ def ocr_page(page: Any, *, lang: str = "chi_tra+chi_sim+eng",
     book/paper layouts.
 
     Raises ImportError when the optional dependency isn't installed —
-    the caller should gate the call with :func:`is_available`.
+    the caller should gate the call with :func:`is_available`. Any
+    Tesseract-level error (missing lang pack, corrupt page bitmap)
+    is swallowed and returns an empty string so the ingest stage can
+    fall back to ``text_source="empty"``.
     """
     try:
         import pytesseract  # type: ignore
         from PIL import Image
+        # Imported here (not at module top) so users without the OCR
+        # extra never pay the cost of loading fitz transitively.
+        import fitz  # type: ignore
     except ImportError as e:
         raise ImportError(
             "OCR fallback requires pytesseract — install with "
@@ -63,14 +94,15 @@ def ocr_page(page: Any, *, lang: str = "chi_tra+chi_sim+eng",
         ) from e
     import io
 
-    # Tesseract works on a flat bitmap; rendering at the requested dpi
-    # is the standard PyMuPDF workflow.
+    # Render the page at the requested dpi (72 dpi = native PDF units).
     zoom = dpi / 72.0
-    matrix = page.parent.PDF_MATRIX_IDENTITY  # type: ignore[attr-defined]
-    # Use Matrix(zoom, zoom) without importing fitz at module load.
-    import fitz  # type: ignore  # local: keeps this module lazy for non-OCR users
-    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+    try:
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+    except Exception:
+        # A corrupt page or a PyMuPDF render failure shouldn't poison
+        # the whole pipeline — let ingest mark this page empty.
+        return ""
     try:
         return pytesseract.image_to_string(img, lang=lang).strip()
     except pytesseract.TesseractError:
