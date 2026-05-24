@@ -87,13 +87,17 @@ sudo systemctl restart ollama          # Linux systemd 安裝
 
 ollama 透過 curl 安裝腳本起的 systemd 服務常常在開機時 NVIDIA driver 還沒載入就先起來、之後永遠看不到 GPU；restart 一次就好。
 
-要換更大模型 (e.g. RTX 5090)：改自己的 config overlay (例如 `runs/my_video/config.yaml`) 的 `llm.model`，或直接用內建的 `rtx5090` overlay：
+**預設就能跑** — 上面那行 `ollama pull qwen2.5:14b-instruct` 拉完直接跳到 §3 開工，不用碰 config。
 
-```bash
-paperreel all ./your_book.pdf --project ./runs/my_video --config rtx5090
+要換模型 (例如 RTX 5090 想吃 70B)，**改 `src/paperreel/configs/default.yaml` 的 `llm.model`**，然後 `ollama pull` 你填的那個：
+
+```yaml
+# src/paperreel/configs/default.yaml
+llm:
+  model: "llama3.3:70b-instruct"   # 改完記得 ollama pull llama3.3:70b-instruct
 ```
 
-預設配置在 `src/paperreel/configs/default.yaml`，內建 overlays 同目錄（執行時透過 `importlib.resources` 載入，不需要 repo checkout 存在）。記得先 `ollama pull` 想換的模型。
+> 附註：同目錄下有個 `rtx5090.yaml` overlay (用 `--config rtx5090` 套用)，會把 LLM 強制換成 `llama3.3:70b-instruct` 並把 TTS/SDXL device 設成 `cuda`。**用之前一定要先 `ollama pull llama3.3:70b-instruct`** (~43 GB),否則第一個 LLM 呼叫就 404。內建 overlays 都是執行時透過 `importlib.resources` 載入,不需要 repo checkout 存在。
 
 ### 2.2 TTS — XTTS 語音設定
 
