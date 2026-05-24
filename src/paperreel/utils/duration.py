@@ -30,7 +30,7 @@ def estimate_target_minutes(
     page_count: int,
     heading_count: int,
     auto_chars_per_minute: float = 2200,
-    auto_minutes_min: float = 12,
+    auto_minutes_min: float = 3,
     auto_minutes_max: float = 120,
     user_target: float | str | None = "auto",
 ) -> DurationPlan:

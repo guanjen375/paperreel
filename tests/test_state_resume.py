@@ -86,3 +86,30 @@ def test_state_summary_reports_artifacts(project_dir: Path, tiny_pdf: Path,
     assert any(r["name"] == "ingest" and r["status"] == "completed" for r in s["stages"])
     assert s["artifact_counts"].get("ingest", 0) >= 1
     db.close()
+
+
+def test_status_resolves_errors_when_stage_later_completes(project_dir: Path) -> None:
+    """Errors logged before a stage's most recent finish_at are resolved, not active."""
+    db = StateDB(project_dir / "state.sqlite")
+    h = hash_inputs("v1", {"x": 1})
+
+    # Simulate a failed audio run that left two errors behind.
+    db.start_stage("audio", h)
+    db.log_error("audio", "ollama timeout")
+    db.log_error("audio", "tts unavailable")
+    db.fail_stage("audio", "ollama timeout")
+    assert db.status_summary()["error_count"] == 2
+
+    # Same stage now succeeds — both errors should become "resolved".
+    db.start_stage("audio", h)
+    db.finish_stage("audio", [])
+    s = db.status_summary()
+    assert s["error_count"] == 0
+    assert s["error_count_resolved"] == 2
+
+    # A fresh error logged AFTER the success stays active.
+    db.log_error("audio", "later flake")
+    s = db.status_summary()
+    assert s["error_count"] == 1
+    assert s["error_count_resolved"] == 2
+    db.close()

@@ -135,7 +135,7 @@ paperreel all ./your_book.pdf \
     --resume
 ```
 
-- `--target-minutes auto`：依 PDF 篇幅自動估算 (12–120 分鐘)；可填整數強制指定。
+- `--target-minutes auto`：依 PDF 篇幅自動估算 (3–120 分鐘)；可填整數強制指定。短 PDF 別預期硬撐到 12 min — 真實長度通常是 PDF 字數 / 2200 chars/min，下限 3 min。
 - `--max-hours 10`：總執行時間上限 (中斷後再 `--resume`)。
 - `--resume`：中斷後再執行同一行即從中斷點接續。
 

@@ -9,7 +9,7 @@ from paperreel.utils.duration import (estimate_scene_seconds,
 def test_short_pdf_clamps_to_lower_bound() -> None:
     plan = estimate_target_minutes(cjk_char_count=2000, page_count=10,
                                    heading_count=2)
-    assert plan.target_minutes == 12.0
+    assert plan.target_minutes == 3.0
 
 
 def test_huge_book_clamps_into_large_book_window() -> None:

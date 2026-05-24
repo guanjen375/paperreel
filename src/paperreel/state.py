@@ -81,7 +81,10 @@ CREATE INDEX IF NOT EXISTS idx_errors_scene ON errors(scene_id);
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # microseconds, not seconds — status_summary's "resolved errors" filter
+    # compares e.created_at vs s.finished_at, and stages routinely finish in
+    # under a second.
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 class StateDB:
@@ -328,11 +331,23 @@ class StateDB:
         for r in c.execute(
                 "SELECT stage, COUNT(*) as n FROM artifacts GROUP BY stage").fetchall():
             artifact_counts[r["stage"]] = r["n"]
-        errors = c.execute("SELECT COUNT(*) as n FROM errors").fetchone()["n"]
+        # An error is "resolved" once its stage has subsequently completed:
+        # the stage row exists, status='completed', and finished_at is at or
+        # after the error timestamp. Anything else is still "active".
+        active = c.execute("""
+            SELECT COUNT(*) AS n FROM errors e
+            LEFT JOIN stages s ON s.name = e.stage
+            WHERE s.status IS NULL
+               OR s.status != 'completed'
+               OR s.finished_at IS NULL
+               OR e.created_at > s.finished_at
+        """).fetchone()["n"]
+        total = c.execute("SELECT COUNT(*) AS n FROM errors").fetchone()["n"]
         return {
             "stages": stages,
             "scene_status_counts": scene_counts,
             "artifact_counts": artifact_counts,
-            "error_count": errors,
+            "error_count": active,
+            "error_count_resolved": total - active,
             "queried_at": _now(),
         }

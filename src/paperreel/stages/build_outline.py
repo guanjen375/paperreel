@@ -33,7 +33,7 @@ def run(*, project_root: str | Path, project_name: str, db: StateDB, config: dic
         page_count=sources.page_count,
         heading_count=sources.heading_count,
         auto_chars_per_minute=float(dur_cfg.get("auto_chars_per_minute", 2200)),
-        auto_minutes_min=float(dur_cfg.get("auto_minutes_min", 12)),
+        auto_minutes_min=float(dur_cfg.get("auto_minutes_min", 3)),
         auto_minutes_max=float(dur_cfg.get("auto_minutes_max", 120)),
         user_target=target_minutes,
     )

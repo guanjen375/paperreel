@@ -342,7 +342,13 @@ def status(
     console.print(scene_tbl)
 
     console.print(f"artifacts: { s['artifact_counts'] }")
-    console.print(f"errors: { s['error_count'] }")
+    resolved = s.get("error_count_resolved", 0)
+    if resolved > 0:
+        console.print(
+            f"errors: {s['error_count']} active "
+            f"([dim]{resolved} resolved by a later successful stage run[/dim])")
+    else:
+        console.print(f"errors: {s['error_count']}")
 
 
 @app.command(name="retry-failed")
