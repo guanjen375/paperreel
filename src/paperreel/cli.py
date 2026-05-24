@@ -119,6 +119,51 @@ def _fmt_elapsed(s: float) -> str:
     return f"{m}m {int(s - m * 60)}s"
 
 
+def _ollama_daemon_on_terminal() -> str | None:
+    """If an ``ollama serve`` is logging to a tty we share, return that tty name.
+
+    We can't silence an external daemon's stderr from inside Python — but we
+    can detect when one will spam this run's progress lines and tell the user
+    how to fix it (one-shot tip, no auto-action). Returns ``None`` when we
+    can't tell or the daemon is logging elsewhere; that's the safe default.
+    Linux-only — falls through silently on macOS/Windows where /proc/<pid>/fd
+    isn't available.
+    """
+    import os
+    import subprocess
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "ollama serve"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    pids = [p for p in result.stdout.split() if p.isdigit()]
+    if not pids:
+        return None
+    # Collect tty names attached to *our* fds 0/1/2 (any of them tells us
+    # which terminal we're on; running under `tee` etc. may detach some).
+    our_ttys: set[str] = set()
+    for fd in (0, 1, 2):
+        try:
+            our_ttys.add(os.ttyname(fd))
+        except OSError:
+            continue
+    if not our_ttys:
+        return None
+    for pid in pids:
+        for fd in ("1", "2"):
+            try:
+                link = os.readlink(f"/proc/{pid}/fd/{fd}")
+            except (OSError, PermissionError):
+                continue
+            if link in our_ttys:
+                return link
+    return None
+
+
 class _Pipeline:
     """Stage-by-stage runner with spinner + completion lines.
 
@@ -221,6 +266,16 @@ def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
         console.print(
             "[yellow]! ffmpeg not on PATH — final render will be skipped. "
             "Install ffmpeg, then re-run to finish.[/]"
+        )
+    ollama_tty = _ollama_daemon_on_terminal()
+    if ollama_tty:
+        # We can silence in-process noise (diffusers etc.) but not an external
+        # daemon logging to a shared tty. Give the user a one-shot fix.
+        console.print(
+            f"[dim]! tip: ollama daemon is logging to this terminal ({ollama_tty}). "
+            f"To silence next run, restart it detached, e.g.:[/]\n"
+            f"  [dim]pkill -f 'ollama serve' && nohup ollama serve "
+            f">/tmp/ollama.log 2>&1 &[/]"
         )
     console.print("─" * 60)
 

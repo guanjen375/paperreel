@@ -11,6 +11,7 @@ Install: ``pip install paperreel[sdxl]``.
 """
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,46 @@ DEFAULT_NEGATIVE = (
     "low quality, blurry, watermark, text, signature, deformed, ugly, "
     "duplicate, jpeg artifacts"
 )
+
+_LOGGING_QUIETED = False
+
+
+def _silence_diffusers_logging() -> None:
+    """Stop diffusers/HF Hub from drowning paperreel's per-stage progress lines.
+
+    Idempotent — safe to call from every ``_ensure_pipe``. Targets:
+      * HF Hub "Loading pipeline components: 100%|...|" bar on ``from_pretrained``
+      * diffusers INFO-level chatter
+      * recurring ``FutureWarning`` from the bundled SDXL pipeline
+        (``upcast_vae`` deprecation fires once per inference call)
+    The per-call inference tqdm bar is disabled on the pipeline itself
+    (see ``set_progress_bar_config(disable=True)`` below) — that flag is
+    per-instance, not global, so it lives at the call site.
+    """
+    global _LOGGING_QUIETED
+    if _LOGGING_QUIETED:
+        return
+    import os
+    # Belt-and-suspenders for any HF-side tqdm that reads env at first use.
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    try:
+        from diffusers.utils import logging as _diff_logging  # type: ignore
+        _diff_logging.set_verbosity_error()
+        # Kills the "Loading pipeline components: ..." bar fired by
+        # ``from_pretrained``. This is diffusers' own knob (singular) —
+        # the HF Hub one below covers other transfer bars.
+        _diff_logging.disable_progress_bar()
+    except Exception:
+        pass
+    try:
+        from huggingface_hub.utils import logging as _hf_logging  # type: ignore
+        _hf_logging.disable_progress_bars()
+    except Exception:
+        pass
+    warnings.filterwarnings(
+        "ignore", category=FutureWarning, module=r"diffusers(\..*)?",
+    )
+    _LOGGING_QUIETED = True
 
 
 class SdxlUnavailable(RuntimeError):
@@ -65,6 +106,7 @@ class SdxlImage(ImageProvider):
     def _ensure_pipe(self) -> Any:
         if self._pipe is not None:
             return self._pipe
+        _silence_diffusers_logging()
         try:
             import torch  # type: ignore
             from diffusers import StableDiffusionXLPipeline  # type: ignore
@@ -86,8 +128,16 @@ class SdxlImage(ImageProvider):
                 variant="fp16" if torch_dtype == torch.float16 else None,
             )
             pipe = pipe.to(device)
+            # Suppress the per-call inference tqdm bar — one per scene × ~30
+            # steps drowns paperreel's stage progress lines.
+            try:
+                pipe.set_progress_bar_config(disable=True)
+            except Exception:
+                pass
             # Saves ~30% VRAM on large UNet without hurting quality much.
-            pipe.enable_vae_slicing()
+            # Use the vae-level API; the pipeline-level shortcut is deprecated
+            # and fires a FutureWarning on every load.
+            pipe.vae.enable_slicing()
         except Exception as e:
             raise SdxlUnavailable(
                 f"failed to load {self.model_id} on {device}: {e!r}"
