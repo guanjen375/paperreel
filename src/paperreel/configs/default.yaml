@@ -57,7 +57,7 @@ tts:
   speaker: "Ana Florence"
   # XTTS uses zh-cn as the Chinese language tag — feeding it 繁體 text is fine.
   language: "zh-cn"
-  device: "auto"                # auto | cuda | cpu
+  device: "cuda"                # auto | cuda | cpu
   sample_rate_hz: 48000
   format: "wav"
   speaking_rate: 1.0
