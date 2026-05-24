@@ -164,6 +164,50 @@ def _ollama_daemon_on_terminal() -> str | None:
     return None
 
 
+def _restart_ollama_detached(base_url: str, log_path: str = "/tmp/ollama.log") -> bool:
+    """Kill the current ``ollama serve`` and start a new one detached.
+
+    Used by ``--quiet-ollama`` after we detect that the daemon is logging
+    to our tty. The replacement writes stdout/stderr to ``log_path`` and is
+    in a fresh session so it survives this process exiting. Returns True
+    once the new daemon answers ``GET /api/tags``; False on timeout (caller
+    proceeds anyway — the LLM provider will surface a clearer error later
+    if the daemon never comes back).
+    """
+    import subprocess
+    import urllib.error
+    import urllib.request
+
+    api_url = base_url.rstrip("/") + "/api/tags"
+    subprocess.run(["pkill", "-f", "ollama serve"], check=False)
+    # Give the old daemon a moment to release the port; ollama binds to
+    # 11434 and the new instance below will fail-loop without this.
+    for _ in range(20):
+        try:
+            urllib.request.urlopen(api_url, timeout=0.5)
+        except (urllib.error.URLError, OSError):
+            break  # port is free or daemon already gone
+        time.sleep(0.25)
+
+    log_fd = open(log_path, "ab")
+    subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+        ["ollama", "serve"],
+        stdin=subprocess.DEVNULL,
+        stdout=log_fd,
+        stderr=log_fd,
+        start_new_session=True,
+    )
+
+    deadline = time.time() + 20.0
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(api_url, timeout=1.0)
+            return True
+        except (urllib.error.URLError, OSError):
+            time.sleep(0.5)
+    return False
+
+
 class _Pipeline:
     """Stage-by-stage runner with spinner + completion lines.
 
@@ -221,6 +265,10 @@ def run_pipeline(
     skip_render: bool = typer.Option(
         False, "--skip-render",
         help="Stop after subtitles; skip mp4 mux/concat/quality."),
+    quiet_ollama: bool = typer.Option(
+        False, "--quiet-ollama",
+        help="If an `ollama serve` is sharing this terminal, restart it "
+             "detached (logs to /tmp/ollama.log) before stage 2."),
 ) -> None:
     """Generate a 繁中 教學影片 from a PDF.
 
@@ -234,12 +282,14 @@ def run_pipeline(
         pdf=pdf, project=project, config=config,
         target_minutes=target_minutes, max_hours=max_hours,
         force_stage=force_stage, skip_render=skip_render,
+        quiet_ollama=quiet_ollama,
     )
 
 
 def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
                       target_minutes: str, max_hours: float,
-                      force_stage: Optional[str], skip_render: bool) -> None:
+                      force_stage: Optional[str], skip_render: bool,
+                      quiet_ollama: bool = False) -> None:
     if not Path(pdf).exists():
         _abort(f"PDF not found: {pdf}")
     p, cfg, db, meta = _ensure_project(
@@ -268,12 +318,28 @@ def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
             "Install ffmpeg, then re-run to finish.[/]"
         )
     ollama_tty = _ollama_daemon_on_terminal()
-    if ollama_tty:
+    if ollama_tty and quiet_ollama:
+        base_url = str(cfg.get("llm", {}).get("base_url", "http://localhost:11434"))
+        console.print(
+            f"[dim]! ollama daemon was on {ollama_tty}; restarting detached "
+            f"(logs → /tmp/ollama.log)…[/]"
+        )
+        with console.status("[cyan]restarting ollama…[/]", spinner="dots"):
+            ok = _restart_ollama_detached(base_url)
+        if ok:
+            console.print("[dim]  ✓ ollama daemon restarted; tty is clean.[/]")
+        else:
+            console.print(
+                "[yellow]  ! new ollama daemon didn't respond within 20s; "
+                "continuing — LLM stages may fail if it never comes up.[/]"
+            )
+    elif ollama_tty:
         # We can silence in-process noise (diffusers etc.) but not an external
         # daemon logging to a shared tty. Give the user a one-shot fix.
         console.print(
             f"[dim]! tip: ollama daemon is logging to this terminal ({ollama_tty}). "
-            f"To silence next run, restart it detached, e.g.:[/]\n"
+            f"Re-run with --quiet-ollama to auto-restart it detached, or do it "
+            f"yourself:[/]\n"
             f"  [dim]pkill -f 'ollama serve' && nohup ollama serve "
             f">/tmp/ollama.log 2>&1 &[/]"
         )
