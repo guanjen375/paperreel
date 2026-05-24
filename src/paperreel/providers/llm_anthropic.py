@@ -1,24 +1,22 @@
-"""Anthropic provider stub. Activated when llm.provider=='anthropic' AND the
-`anthropic` extra is installed AND a key is set in either
+"""Anthropic provider. Activated when llm.provider=='anthropic'.
+
+Requires the `anthropic` extra installed AND a key in either
 PAPERREEL_ANTHROPIC_API_KEY (preferred) or ANTHROPIC_API_KEY.
 
 The project-specific name is preferred so users can keep paperreel's API key
 isolated from ANTHROPIC_API_KEY, which Claude Code uses to switch from
 Pro/Max subscription billing to pay-per-token API billing.
 
-This is intentionally minimal in the MVP: it sends the same prompt shape that
-the MockLLM understands and falls back to MockLLM if any precondition fails.
-The structured prompts (繁體中文, 不逐字照抄, 保留頁碼) are enforced here.
+Missing key, missing package, or API errors all raise loudly — the pipeline
+no longer silently degrades to a placeholder.
 """
 from __future__ import annotations
 
 import json
 import os
-import sys
 from typing import Any
 
 from .llm_base import LLMProvider
-from .llm_mock import MockLLM
 
 
 SYSTEM_PROMPT = (
@@ -31,65 +29,59 @@ SYSTEM_PROMPT = (
 )
 
 
+class AnthropicProviderError(RuntimeError):
+    """Raised when the Anthropic provider cannot satisfy a request."""
+
+
 class AnthropicLLM(LLMProvider):
     name = "anthropic"
 
     def __init__(self, cfg: dict | None = None):
         self.cfg = cfg or {}
         self._client: Any | None = None
-        self._fallback = MockLLM(cfg)
         self.model = self.cfg.get("model", "claude-opus-4-7")
-        self._init_failed_reason: str | None = None
 
-    def _warn(self, reason: str) -> None:
-        print(f"[paperreel:anthropic] falling back to mock — {reason}", file=sys.stderr)
-
-    def _ensure_client(self) -> Any | None:
+    def _ensure_client(self) -> Any:
         if self._client is not None:
             return self._client
-        if self._init_failed_reason:
-            return None
         api_key = os.environ.get("PAPERREEL_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            self._init_failed_reason = "no API key (set PAPERREEL_ANTHROPIC_API_KEY)"
-            self._warn(self._init_failed_reason)
-            return None
+            raise AnthropicProviderError(
+                "no API key — set PAPERREEL_ANTHROPIC_API_KEY (preferred) "
+                "or ANTHROPIC_API_KEY in your environment"
+            )
         try:
             import anthropic  # type: ignore
-        except ImportError:
-            self._init_failed_reason = "anthropic package not installed (pip install -e \".[anthropic]\")"
-            self._warn(self._init_failed_reason)
-            return None
+        except ImportError as e:
+            raise AnthropicProviderError(
+                "anthropic package not installed — run "
+                "`pip install -e \".[anthropic]\"`"
+            ) from e
         self._client = anthropic.Anthropic(api_key=api_key)
         return self._client
 
-    # ---------- private helpers ----------
-
-    def _ask_json(self, user_prompt: str, *, max_tokens: int = 4000) -> dict | list | None:
+    def _ask_json(self, user_prompt: str, *, max_tokens: int = 4000) -> dict | list:
         client = self._ensure_client()
-        if client is None:
-            return None
+        msg = client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        text = "".join(
+            getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text"
+        ).strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lstrip().lower().startswith("json"):
+                text = text.split("\n", 1)[1] if "\n" in text else text
         try:
-            msg = client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
-            )
-            text = "".join(
-                getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text"
-            )
-            text = text.strip()
-            if text.startswith("```"):
-                text = text.strip("`")
-                if text.lstrip().lower().startswith("json"):
-                    text = text.split("\n", 1)[1] if "\n" in text else text
             return json.loads(text)
-        except Exception as e:
-            self._warn(f"{type(e).__name__}: {e}")
-            return None
+        except json.JSONDecodeError as e:
+            raise AnthropicProviderError(
+                f"model returned non-JSON response: {text[:300]}"
+            ) from e
 
-    # ---------- interface ----------
     def chunk_summarize(self, chunk_text: str, *, page_range: tuple[int, int],
                         target_chars: int) -> dict:
         prompt = (
@@ -102,12 +94,12 @@ class AnthropicLLM(LLMProvider):
             f"{chunk_text[:12000]}"
         )
         out = self._ask_json(prompt, max_tokens=1200)
-        if isinstance(out, dict):
-            out.setdefault("page_range", list(page_range))
-            return out
-        return self._fallback.chunk_summarize(
-            chunk_text, page_range=page_range, target_chars=target_chars,
-        )
+        if not isinstance(out, dict):
+            raise AnthropicProviderError(
+                f"chunk_summarize expected dict, got {type(out).__name__}"
+            )
+        out.setdefault("page_range", list(page_range))
+        return out
 
     def build_outline(self, chunk_summaries: list[dict], *,
                       target_minutes: float, project: str) -> dict:
@@ -124,11 +116,11 @@ class AnthropicLLM(LLMProvider):
             + json.dumps(chunk_summaries, ensure_ascii=False)
         )
         out = self._ask_json(prompt, max_tokens=3000)
-        if isinstance(out, dict) and "chapters" in out:
-            return out
-        return self._fallback.build_outline(
-            chunk_summaries, target_minutes=target_minutes, project=project,
-        )
+        if not isinstance(out, dict) or "chapters" not in out:
+            raise AnthropicProviderError(
+                "build_outline response missing required 'chapters' field"
+            )
+        return out
 
     def write_chapter_script(self, chapter: dict, source_pages_text: dict[int, str],
                              *, chars_per_scene: int,
@@ -151,9 +143,9 @@ class AnthropicLLM(LLMProvider):
             + source_blob
         )
         out = self._ask_json(prompt, max_tokens=4000)
-        if isinstance(out, list) and out:
-            return out
-        return self._fallback.write_chapter_script(
-            chapter, source_pages_text,
-            chars_per_scene=chars_per_scene, forbid_verbatim=forbid_verbatim,
-        )
+        if not isinstance(out, list) or not out:
+            raise AnthropicProviderError(
+                "write_chapter_script expected non-empty list, "
+                f"got {type(out).__name__}"
+            )
+        return out

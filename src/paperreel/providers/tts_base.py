@@ -20,10 +20,7 @@ class TTSProvider(ABC):
 
 
 def make_tts_provider(cfg: dict) -> TTSProvider:
-    name = (cfg or {}).get("provider", "mock").lower()
-    if name == "mock":
-        from .tts_mock import MockTTS
-        return MockTTS(cfg)
+    name = (cfg or {}).get("provider", "edge").lower()
     if name == "edge":
         from .tts_edge import EdgeTTS
         return EdgeTTS(cfg)

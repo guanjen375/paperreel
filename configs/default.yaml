@@ -23,7 +23,7 @@ ingest:
   ocr_fallback: false       # 第一版不做 OCR
 
 llm:
-  provider: "anthropic"     # mock | anthropic
+  provider: "anthropic"
   model: "claude-sonnet-4-6"
   max_chunk_chars: 8000
   hierarchical_levels: 2
@@ -32,14 +32,11 @@ llm:
   max_verbatim_run_chars: 40
 
 tts:
-  provider: "edge"          # mock | edge
+  provider: "edge"
   voice: "zh-TW-HsiaoChenNeural"
   sample_rate_hz: 48000
   format: "wav"
   speaking_rate: 1.0
-
-image:
-  provider: "mock"          # mock | (future) sdxl/flux
 
 renderer:
   resolution: [1920, 1080]

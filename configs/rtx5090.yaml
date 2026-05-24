@@ -5,11 +5,8 @@ llm:
   max_chunk_chars: 12000
 
 tts:
-  provider: "edge"            # 或自行接上本機 GPU TTS (Fish/CosyVoice 等)
+  provider: "edge"
   voice: "zh-TW-HsiaoChenNeural"
-
-image:
-  provider: "mock"            # 之後改為本機 SDXL/Flux 時改這裡
 
 renderer:
   fps: 30

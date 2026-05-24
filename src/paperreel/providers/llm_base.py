@@ -26,10 +26,7 @@ class LLMProvider(ABC):
 
 
 def make_llm_provider(provider_cfg: dict) -> LLMProvider:
-    name = (provider_cfg or {}).get("provider", "mock").lower()
-    if name == "mock":
-        from .llm_mock import MockLLM
-        return MockLLM(provider_cfg)
+    name = (provider_cfg or {}).get("provider", "anthropic").lower()
     if name == "anthropic":
         from .llm_anthropic import AnthropicLLM
         return AnthropicLLM(provider_cfg)

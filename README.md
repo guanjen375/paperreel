@@ -1,14 +1,20 @@
-# paperreel
+# paperreel (API edition)
 
 把任意 PDF 轉成繁體中文教學影片 (MP4 + SRT/ASS)。
+
+> 這是 **`paperreel_api`** 分支：腳本 / 章節走 Anthropic API、配音走 edge-tts。
+> 沒有 mock fallback — 缺套件 / 缺 key / API 出錯都會明確報錯。
+> 若想跑離線本地模型版本，請切到 `main` 分支。
 
 ---
 
 ## 1. 安裝
 
 ```bash
-pip install -e .
+pip install -e ".[anthropic,edge]"
 ```
+
+API edition **必裝** `anthropic` + `edge-tts` 兩個 extras，否則 pipeline 啟動時會直接報錯。
 
 系統需有 `ffmpeg` 和 `ffprobe` 在 PATH 上：
 
@@ -18,44 +24,13 @@ pip install -e .
 
 ---
 
-## 2. Mock vs 真實 provider
+## 2. 設定 API key
 
-預設 `llm.provider = mock`、`tts.provider = mock` — 不需要任何 API key、不需要連網就能跑完並產出 MP4。但要注意：
-
-| | 預設 (mock) | 換成真實 provider |
-|---|---|---|
-| 腳本/講稿 | 抓 PDF 開頭幾句套教學殼，**佔位文字** | 真正的繁中摘要、章節規劃、教學講稿 |
-| 配音 | 220 Hz 嗡嗡聲，長度依字數估算 | 真實人聲 |
-| 用途 | 驗證 pipeline 是否跑得通 | 可實際拿來教學的影片 |
-| 成本 | 0 元、離線 | LLM 通常按 token 計費；線上 TTS 依 provider 而定 |
-
-LLM / TTS 都是**可插拔架構**，第一版內建的真實 provider 可這樣裝：
-
-```bash
-pip install -e ".[anthropic,edge]"   # 同時裝 LLM + TTS
-# 或只升級其中一邊:
-pip install -e ".[anthropic]"
-pip install -e ".[edge]"
-```
-
-裝好之後：
-
-1. 在自訂 config (或直接改 `configs/default.yaml`) 把 `llm.provider` / `tts.provider` 從 `mock` 改成對應名稱 (如 `anthropic` / `edge`)。
-2. 把該 provider 需要的 API key 設成環境變數 (例如 `PAPERREEL_ANTHROPIC_API_KEY`)，見下方「設定 API key」。
-
-沒裝套件或沒設 key 時會自動 fallback 回 mock，不會中斷 pipeline。
-
-### 設定 API key
-
-不同 provider 取 key 的方式不一樣，常見內建幾個：
-
-- **edge-tts** — 免費，**不需要 key**，能連網即可。
-- **anthropic (Claude)** — 到 `console.anthropic.com` → **API Keys** → **Create Key**，會拿到一串 `sk-ant-...`。
-- 自接其他 provider — 依該服務官網申請。
+到 `console.anthropic.com` → **API Keys** → **Create Key**，拿到一串 `sk-ant-...`。
 
 > **⚠️ 跟 Claude Code 訂閱的衝突**：如果你也在用 Claude Code (Pro / Max 訂閱)，**不要** 把 key 設成 `ANTHROPIC_API_KEY`。Claude Code 一旦偵測到這個變數，會自動切成「按 token 計費」走 API，繞過你的訂閱。paperreel 因此優先讀專案專屬的 `PAPERREEL_ANTHROPIC_API_KEY`，找不到才 fallback 到 `ANTHROPIC_API_KEY`。下面範例都用前者。
 
-拿到 key 後設成環境變數 (把 `<your-key>` 換成實際 key)：
+把 `<your-key>` 換成實際 key：
 
 ```bash
 # macOS / Linux (bash 或 zsh)
@@ -78,14 +53,13 @@ $env:PAPERREEL_ANTHROPIC_API_KEY         # PowerShell
 
 > **⚠️ 安全提醒**：API key 等同密碼。不要 commit 進 git、不要貼到聊天 / issue / 截圖。若不慎外洩，立刻到該 provider 後台 revoke 並重新申請。
 
-想接其他 provider：實作 `src/paperreel/providers/llm_base.py` 或 `tts_base.py` 的介面，再到對應 `make_*_provider()` 加分支即可。
+edge-tts 免費、不需要 key，但要能連網 (走微軟雲端)。
 
 ### 換模型 / 估算成本
 
 - 要換 LLM 模型，改 `configs/default.yaml` 裡的 `llm.model` 即可。
 - Anthropic 的可用型號、定價、推薦用途會持續更新——**請以 [Anthropic 官方文件](https://docs.anthropic.com/en/docs/about-claude/models) 為準**；本 README 刻意不寫死特定型號名稱以免過時。一般而言 Claude 家族「能力越高、單價越貴」是正比關係，預設選的是中階兼顧成本與品質的型號。
 - 每跑一份 PDF 約打 `chunks + chapters + 1` 次 LLM call。1 頁的小 PDF 約 6 通；100 頁的書可能 30 通以上，實際費用看選的模型。
-- 試水溫不想花錢：`paperreel all ... --dry-run` 強制全 mock，不需 key、不打 API。
 
 ---
 
@@ -102,7 +76,6 @@ paperreel all ./your_book.pdf \
 - `--target-minutes auto`：依 PDF 篇幅自動估算 (12–120 分鐘)；可填整數強制指定。
 - `--max-hours 10`：總執行時間上限。
 - `--resume`：中斷後再執行同一行即從中斷點接續。
-- 第一次跑想試小成本：加 `--dry-run`（強制全 mock，不需 API key / 網路）。
 
 ---
 
@@ -137,3 +110,10 @@ paperreel all ./your_book.pdf --project ./runs/my_video \
 ```
 
 可用的 stage 名稱：`ingest, plan, script, scenes, audio, visuals, subtitles, segments, concat, quality`。
+
+常見錯誤訊息：
+
+- `AnthropicProviderError: no API key` → 沒設 `PAPERREEL_ANTHROPIC_API_KEY`，回到 §2。
+- `AnthropicProviderError: anthropic package not installed` → 沒裝 extras，回到 §1。
+- `EdgeTTSError: edge-tts package not installed` → 同上。
+- `EdgeTTSError: ffmpeg not on PATH` → 裝 ffmpeg 或檢查 PATH。
