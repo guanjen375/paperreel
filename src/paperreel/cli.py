@@ -37,6 +37,23 @@ console = Console()
 
 # ---------- helpers ----------
 
+def _release_gpu() -> None:
+    """Free GPU references between heavy stages.
+
+    We run TTS (coqui-tts / XTTS) and SDXL in the same Python process; if
+    TTS-side allocations are still resident when SDXL loads, the SDXL UNet
+    forward can deadlock on layer_norm. Calling this between stages is a
+    cheap insurance against that.
+    """
+    import gc
+    gc.collect()
+    try:
+        import torch  # noqa: WPS433
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
 def _project_paths(project: str | Path) -> dict[str, Path]:
     root = Path(project).resolve()
     return {
@@ -263,6 +280,12 @@ def run_all(
     synthesize_audio.run(project_root=p["root"], db=db, config=cfg, resume=resume,
                          max_retries=int(cfg.get("runtime", {}).get("scene_retry_max", 2)))
     _check_budget(start, max_hours)
+
+    # TTS (coqui-tts) and SDXL share this process and the same GPU. Drop the
+    # TTS-side CUDA allocations / Python refs before loading SDXL — otherwise
+    # the SDXL UNet forward pass occasionally deadlocks on layer_norm with
+    # GPU 0% util, single-thread CPU pegged.
+    _release_gpu()
 
     render_visuals.run(project_root=p["root"], db=db, config=cfg, resume=resume)
     _check_budget(start, max_hours)

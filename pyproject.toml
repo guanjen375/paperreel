@@ -24,15 +24,31 @@ dependencies = [
 # Install the daemon separately: https://ollama.com/download
 ollama = ["ollama>=0.3"]
 
-# Coqui XTTS v2 — multilingual local TTS. Pulls torch + the TTS library.
+# Coqui XTTS v2 — multilingual local TTS. Pulls torch + the maintained
+# `coqui-tts` fork (the original `TTS` package on PyPI is pinned to
+# Python <3.12, so we can't use it on the project's `requires-python`).
+# `[codec]` pulls `torchcodec`, which PyTorch >= 2.9 needs for audio IO.
+# `transformers<5` because coqui-tts 0.27 still imports
+# `transformers.pytorch_utils.isin_mps_friendly` (removed in 5.x).
+# `pypinyin` is needed for Chinese text-to-phoneme inside XTTS.
 # First synth downloads ~1.8 GB of weights to ~/.local/share/tts.
-xtts = ["TTS>=0.22", "torch>=2.2"]
+# Set `COQUI_TOS_AGREED=1` to skip the interactive CPML license prompt
+# the first time the model is fetched.
+xtts = [
+    "coqui-tts[codec]>=0.27",
+    "transformers>=4.41,<5",
+    "torchaudio>=2.2",
+    "pypinyin>=0.50",
+    "torch>=2.2",
+]
 
 # Stable Diffusion XL via 🤗 diffusers. Needs a CUDA GPU for any real
-# throughput (CPU inference is minutes per frame).
+# throughput (CPU inference is minutes per frame). `transformers` is
+# capped at <5 to stay compatible with `coqui-tts` when [xtts] and
+# [sdxl] are installed together.
 sdxl = [
     "diffusers>=0.27",
-    "transformers>=4.41",
+    "transformers>=4.41,<5",
     "accelerate>=0.30",
     "safetensors>=0.4",
     "torch>=2.2",
@@ -41,9 +57,11 @@ sdxl = [
 # Convenience: every local backend at once.
 all = [
     "ollama>=0.3",
-    "TTS>=0.22",
+    "coqui-tts[codec]>=0.27",
+    "transformers>=4.41,<5",
+    "torchaudio>=2.2",
+    "pypinyin>=0.50",
     "diffusers>=0.27",
-    "transformers>=4.41",
     "accelerate>=0.30",
     "safetensors>=0.4",
     "torch>=2.2",

@@ -30,21 +30,16 @@ clone + install：
 
 ```bash
 git clone <this-repo> paperreel && cd paperreel
-
-# Coqui 原 TTS 套件最高只到 Python 3.11；Python ≥ 3.12 請改裝社群維護的 fork
-# (套件名不同但 import path 完全一樣，所以程式碼不用改)：
-pip install "coqui-tts>=0.24"
-
-# 然後裝 paperreel；[xtts] extra 暫時跳過，由上面手動裝的 coqui-tts 取代：
-pip install -e ".[ollama,sdxl]"
-
-# 或單獨裝其中一塊：
+pip install -e ".[all]"      # 同時裝 LLM + TTS + SDXL
+# 或單獨裝：
 pip install -e ".[ollama]"   # 只裝 LLM
+pip install -e ".[xtts]"     # 只裝 TTS
 pip install -e ".[sdxl]"     # 只裝圖片生成
-# TTS 一律走上面 `pip install coqui-tts` 那行
 ```
 
-`coqui-tts` 跟 `[sdxl]` 會拉 PyTorch (~2 GB)；建議事先用對應 CUDA 版本的 wheel 裝好 torch，再裝這兩個，避免抓到 CPU-only 版本。
+`[xtts]` 跟 `[sdxl]` 會拉 PyTorch (~2 GB)；建議事先用對應 CUDA 版本的 wheel 裝好 torch，再 `pip install -e .[…]`，避免抓到 CPU-only 版本。
+
+> `[xtts]` extra 已經改用社群維護的 `coqui-tts` fork（同樣的 XTTS v2 模型、同樣的 `from TTS.api import TTS`），因為 PyPI 上原始的 Coqui `TTS` 套件最高只支援 Python 3.11。同時也鎖了 `transformers<5`，因為 coqui-tts 0.27 還在用 transformers 4.x 的 `isin_mps_friendly`。
 
 ---
 
@@ -53,7 +48,7 @@ pip install -e ".[sdxl]"     # 只裝圖片生成
 | 角色 | Backend | 預設模型 | 第一次下載 | 備註 |
 |---|---|---|---|---|
 | LLM | [Ollama](https://ollama.com) | `qwen2.5:14b-instruct` | ~8 GB | 繁中 + JSON 結構化輸出穩定 |
-| TTS | [Coqui XTTS v2](https://github.com/coqui-ai/TTS) | `tts_models/multilingual/multi-dataset/xtts_v2` | ~1.8 GB | 多語、可 voice clone |
+| TTS | [Coqui XTTS v2](https://github.com/idiap/coqui-ai-TTS) | `tts_models/multilingual/multi-dataset/xtts_v2` | ~1.8 GB | 多語、可 voice clone (用 Idiap 維護的 `coqui-tts` fork) |
 | 圖片 | [Stable Diffusion XL](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) (diffusers) | `stabilityai/stable-diffusion-xl-base-1.0` | ~6.7 GB | 只有 `visual_type=generated_image` 的 scene 才會用到 |
 
 模型完全跑不到時 (Ollama 沒開、TTS 套件沒裝、SDXL OOM) 會直接 raise；沒有 silent fallback，避免你拿到不知道是真是假的影片。
@@ -78,11 +73,31 @@ ollama pull qwen2.5:14b-instruct
 ollama run qwen2.5:14b-instruct "用繁體中文簡單說明牛頓第二定律。"
 ```
 
+**有 GPU 的話一定要確認 ollama 真的吃到 GPU**：14B 模型跑在 CPU 上會慢到 paperreel 的 HTTP timeout（`ReadTimeout`）跳出，整條 pipeline 死在 script stage。
+
+```bash
+# 上面 ollama run 之後模型還在記憶體裡，直接查：
+curl -s http://localhost:11434/api/ps | python3 -c \
+  "import sys,json;m=json.load(sys.stdin)['models'][0];print(f'size_vram={m[\"size_vram\"]/1e9:.1f} GB')"
+# 預期：size_vram=10+ GB (Q4_K_M 14B 大概 12-14 GB)
+# 若回 0.0 GB → ollama 在 CPU 跑，重啟 daemon 讓它重新 detect GPU：
+sudo systemctl restart ollama          # Linux systemd 安裝
+# macOS: 從選單列 quit Ollama.app 再開
+```
+
+ollama 透過 curl 安裝腳本起的 systemd 服務常常在開機時 NVIDIA driver 還沒載入就先起來、之後永遠看不到 GPU；restart 一次就好。
+
 要換更大模型 (e.g. RTX 5090)：改 `configs/default.yaml` 的 `llm.model` (或用 `configs/rtx5090.yaml` 預設的 `llama3.3:70b-instruct`)，記得先 `ollama pull`。
 
 ### 2.2 TTS — XTTS 語音設定
 
-XTTS v2 第一次合成會自動下載 weights 到 `~/.local/share/tts`。語音來源二擇一：
+XTTS v2 第一次合成會自動下載 weights 到 `~/.local/share/tts`，並會跳出 Coqui Public Model License (CPML) 同意 prompt。要在非互動環境（CI / 背景跑）順利跑過，先 export：
+
+```bash
+export COQUI_TOS_AGREED=1
+```
+
+語音來源二擇一：
 
 ```yaml
 # configs/default.yaml
@@ -166,7 +181,10 @@ paperreel all ./your_book.pdf --project ./runs/my_video \
 |---|---|
 | `cannot reach Ollama at http://localhost:11434` | `ollama serve` 沒跑，或 daemon 在別的 host／port — 改 `llm.base_url` |
 | `model not found` / 拉不到 | `ollama pull <model>` 沒做；或 `llm.model` 拼錯 |
-| `Coqui TTS not installed` | `pip install "coqui-tts>=0.24"` (Python ≥ 3.12 用 fork，原 `TTS` 套件最高到 3.11)；torch 要是 CUDA 版才能用 GPU |
+| `OllamaUnavailable: ... ReadTimeout` | 通常是 ollama 跑在 CPU 上、大模型推理超過 paperreel 的 HTTP timeout — 照 §2.1 檢查 `size_vram > 0`，0 的話 `sudo systemctl restart ollama` |
+| `Coqui TTS not installed` | `pip install -e ".[xtts]"` (會抓 `coqui-tts` fork — 原 `TTS` 套件最高到 Python 3.11)；torch 要是 CUDA 版才能用 GPU |
+| TTS 第一次卡在 `... agree to the terms of the non-commercial CPML ... [y/n]` | `export COQUI_TOS_AGREED=1` 再重跑 (見 §2.2) |
+| `pypinyin` 沒裝 / `ImportError('Chinese requires: pypinyin')` | `[xtts]` 已含 `pypinyin`；舊環境用 `pip install -e ".[xtts]" --upgrade` 重灌即可 |
 | `no CUDA GPU detected — SDXL on CPU is impractical` | 換 GPU 機器，或在 config 把 LLM prompt 不要產 `generated_image` (見 §2.3) |
 
 ---

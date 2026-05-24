@@ -15,8 +15,11 @@ Default behaviour:
 There is no mock fallback: if the TTS package or model is unavailable,
 this raises ``XttsUnavailable`` and the pipeline fails loudly.
 
-Install: ``pip install paperreel[xtts]``  (which pulls torch + TTS).
+Install: ``pip install -e ".[xtts]"`` (pulls torch + the maintained
+``coqui-tts`` fork; the original ``TTS`` package is Python <3.12 only).
 The first call downloads ~1.8 GB of weights to ``~/.local/share/tts``.
+Set ``COQUI_TOS_AGREED=1`` so the first download doesn't block on the
+interactive CPML license prompt.
 """
 from __future__ import annotations
 

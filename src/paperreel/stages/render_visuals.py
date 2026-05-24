@@ -15,7 +15,7 @@ from pathlib import Path
 from ..hashing import hash_inputs
 from ..io_utils import atomic_write_json, read_json
 from ..models import Scene, SceneGraph, SceneStatus, VisualType
-from ..providers.image_base import make_image_provider
+from ..providers.image_base import ImageProvider, make_image_provider
 from ..renderers.card_renderer import CardRenderer
 from ..state import StateDB
 
@@ -29,7 +29,8 @@ def paths_for(project_root: str | Path) -> dict[str, Path]:
     }
 
 
-def _generate_sdxl_asset(scene: Scene, out_path: Path, image_cfg: dict,
+def _generate_sdxl_asset(scene: Scene, out_path: Path,
+                         provider: ImageProvider,
                          resolution: tuple[int, int]) -> str | None:
     """Generate one SDXL image. Return path on success, None on failure
     (caller falls back to a card)."""
@@ -37,7 +38,6 @@ def _generate_sdxl_asset(scene: Scene, out_path: Path, image_cfg: dict,
     if not prompt:
         return None
     try:
-        provider = make_image_provider(image_cfg)
         return provider.generate(prompt, out_path,
                                  width=resolution[0], height=resolution[1])
     except Exception:
@@ -61,6 +61,26 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
     input_hash = hash_inputs("visuals_v1", rcfg, icfg)
     db.start_stage("visuals", input_hash)
 
+    # Lazily created on first generated_image scene; reused across the whole
+    # stage so the SDXL pipeline (~7 GB) is loaded once, not per-scene.
+    image_provider: ImageProvider | None = None
+    image_provider_failed = False  # so we don't retry the load every scene
+
+    def _drop_gpu_scratch() -> None:
+        # Called after every SDXL render. SDXL's per-step transient tensors
+        # fragment the CUDA caching allocator; without this we eventually hit
+        # a state where layer_norm hangs (single-thread CPU, GPU 0% util) on
+        # a later scene's forward pass.
+        import gc
+        gc.collect()
+        try:
+            import torch  # noqa: WPS433
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
     new_scenes: list[Scene] = []
     failures: list[str] = []
 
@@ -79,8 +99,19 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
         #    later stages (segments / quality) read the renderable PNG.
         sdxl_src: str | None = None
         if sc.visual_type == VisualType.generated_image and not sc.visual_asset_paths:
+            if image_provider is None and not image_provider_failed:
+                try:
+                    image_provider = make_image_provider(icfg)
+                except Exception:
+                    image_provider_failed = True
             gen_path = p["generated_dir"] / f"{sc.scene_id}.png"
-            sdxl_src = _generate_sdxl_asset(sc, gen_path, icfg, (int(res[0]), int(res[1])))
+            sdxl_src = (
+                _generate_sdxl_asset(sc, gen_path, image_provider,
+                                     (int(res[0]), int(res[1])))
+                if image_provider is not None
+                else None
+            )
+            _drop_gpu_scratch()
             if sdxl_src:
                 sc = sc.model_copy(update={"visual_asset_paths": [sdxl_src]})
                 db.register_artifact(Path(sdxl_src), stage="visuals",
