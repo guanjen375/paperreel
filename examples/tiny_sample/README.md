@@ -3,7 +3,7 @@
 `tests/conftest.py` 會在 `tmp_path` 動態產生一份 4 頁的 CJK PDF；
 這個資料夾故意保持空白，避免把任何受版權保護的範例檔簽入 repo。
 
-如果想手動跑一次 dry-run：
+如果想手動產一份 tiny.pdf 跑跑看（`--skip-render` 會在字幕做完就停，跳過 segments/concat/quality；ffmpeg 不在的環境一樣能跑到底）：
 
 ```bash
 python - <<'PY'
@@ -23,7 +23,7 @@ print("wrote", p)
 PY
 
 paperreel all examples/tiny_sample/tiny.pdf \
-    --project ./runs/tiny --dry-run --skip-render
+    --project ./runs/tiny --skip-render
 ```
 
 完成後檢視 `runs/tiny/intermediate/scene_graph.json` 與
