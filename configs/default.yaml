@@ -23,7 +23,13 @@ ingest:
   extract_images: true
   min_image_pixels: 40000   # 過濾極小裝飾圖
   image_format: "png"
-  ocr_fallback: false       # 第一版不做 OCR
+  # OCR fallback for scanned / image-only PDFs. Requires the `[ocr]`
+  # extra (pytesseract) and a system `tesseract` binary; otherwise this
+  # silently degrades to "empty" pages.
+  ocr_fallback: true
+  ocr_min_chars: 50          # 該頁文字少於此數才會 OCR
+  ocr_lang: "chi_tra+chi_sim+eng"
+  ocr_dpi: 200
 
 llm:
   provider: "ollama"
@@ -55,6 +61,15 @@ tts:
   sample_rate_hz: 48000
   format: "wav"
   speaking_rate: 1.0
+
+# Figure-to-scene matching. When a scene's source pages contain extracted
+# PDF images, the `match_visuals` stage picks the best fit and upgrades
+# that scene to visual_type=pdf_image so the renderer shows the figure
+# (with on_screen_text as a caption) instead of a generic bullet card.
+# Set prefer_pdf_figures: false to disable the auto-assignment.
+visuals:
+  prefer_pdf_figures: true
+  pdf_figure_min_score: 3.0   # 太低會抓到太小 / 無關的裝飾圖
 
 image:
   provider: "sdxl"

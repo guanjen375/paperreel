@@ -173,7 +173,18 @@ paperreel all ./your_book.pdf --project ./runs/my_video \
     --force-stage plan,script,scenes --resume
 ```
 
-可用的 stage 名稱：`ingest, plan, script, scenes, audio, visuals, subtitles, segments, concat, quality`。
+可用的 stage 名稱：`ingest, plan, script, scenes, match_visuals, audio, visuals, subtitles, segments, concat, quality`。
+
+> `match_visuals`：把 ingest 抓到的 PDF 圖片配對到對應的 scene，符合條件的 scene 會升級成 `pdf_image`，影片裡會看到原文件的圖表 + 你寫的字幕。要關掉就在 config 把 `visuals.prefer_pdf_figures` 設成 `false`。
+
+要處理掃描檔 / 投影片截圖 PDF：
+
+```bash
+sudo apt install -y tesseract-ocr tesseract-ocr-chi-tra tesseract-ocr-chi-sim
+pip install -e ".[ocr]"
+```
+
+OCR 預設 `ocr_fallback: true` — 該頁文字少於 `ingest.ocr_min_chars` 時自動跑 Tesseract。沒裝 `[ocr]` 就會 silently degrade 成 empty page；`quality_report.json` 會把這些頁面標出來。
 
 常見錯誤：
 

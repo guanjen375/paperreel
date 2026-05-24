@@ -26,8 +26,9 @@ from .config import load_config
 from .io_utils import atomic_write_json, ensure_dir
 from .models import ProjectMeta
 from .stages import (build_outline, build_scene_graph, build_subtitles,
-                     concat_final, ingest_pdf, quality_check, render_segments,
-                     render_visuals, synthesize_audio, write_script)
+                     concat_final, ingest_pdf, match_pdf_visuals,
+                     quality_check, render_segments, render_visuals,
+                     synthesize_audio, write_script)
 from .state import StateDB
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
@@ -180,6 +181,20 @@ def scenes(
     console.print(f"[green]✓[/green] scene graph: {len(g.scenes)} scenes")
 
 
+@app.command(name="match-visuals")
+def match_visuals(
+    project: str = typer.Option(..., "--project", "-p"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Assign extracted PDF figures to matching scenes."""
+    p, cfg, db, _ = _ensure_project(project, overlay=config)
+    g = match_pdf_visuals.run(project_root=p["root"], db=db, config=cfg)
+    matched = sum(1 for s in g.scenes
+                  if s.visual_type.value == "pdf_image" and s.visual_asset_paths)
+    console.print(f"[green]✓[/green] matched {matched}/{len(g.scenes)} "
+                  f"scenes to PDF figures")
+
+
 @app.command()
 def audio(
     project: str = typer.Option(..., "--project", "-p"),
@@ -277,6 +292,12 @@ def run_all(
                           force="scenes" in forced)
     _check_budget(start, max_hours)
 
+    # match_visuals is cheap (pure metadata join) and idempotent — always
+    # run it; passing --force-stage match_visuals just re-emits the
+    # matches log.
+    match_pdf_visuals.run(project_root=p["root"], db=db, config=cfg)
+    _check_budget(start, max_hours)
+
     synthesize_audio.run(project_root=p["root"], db=db, config=cfg, resume=resume,
                          max_retries=int(cfg.get("runtime", {}).get("scene_retry_max", 2)))
     _check_budget(start, max_hours)
@@ -324,8 +345,9 @@ def status(
     stage_tbl = Table(title="Stages", show_lines=False)
     stage_tbl.add_column("name"); stage_tbl.add_column("status")
     stage_tbl.add_column("finished_at"); stage_tbl.add_column("input_hash", overflow="fold")
-    order = ["ingest", "plan", "script", "scenes", "audio", "visuals",
-             "subtitles", "segments", "concat", "quality"]
+    order = ["ingest", "plan", "script", "scenes", "match_visuals",
+             "audio", "visuals", "subtitles", "segments", "concat",
+             "quality"]
     by_name = {r["name"]: r for r in s["stages"]}
     for n in order:
         r = by_name.get(n)

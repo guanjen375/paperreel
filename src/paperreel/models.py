@@ -39,6 +39,7 @@ class StageName(str, Enum):
     plan = "plan"
     script = "script"
     scenes = "scenes"
+    match_visuals = "match_visuals"
     audio = "audio"
     visuals = "visuals"
     subtitles = "subtitles"
@@ -59,6 +60,14 @@ class PdfImage(BaseModel):
     pixel_count: int
     sha256: str
     caption_hint: str | None = None
+    # bbox = (x0, y0, x1, y1) in PDF points. Optional because some
+    # embedded images can't be located on the page (rare; mostly forms
+    # and inline icons via SMask). Used by match_pdf_visuals for
+    # caption discovery and figure prioritisation.
+    bbox: tuple[float, float, float, float] | None = None
+
+
+PageTextSource = Literal["text", "ocr", "empty"]
 
 
 class PdfPage(BaseModel):
@@ -67,6 +76,10 @@ class PdfPage(BaseModel):
     text: str
     cjk_char_count: int
     headings: list[str] = []
+    # How `text` was obtained — drives the quality report so a deck of
+    # scanned pages doesn't masquerade as a clean digital PDF, and lets
+    # downstream stages prefer figures over OCR'd text where appropriate.
+    text_source: PageTextSource = "text"
 
 
 class PdfChunk(BaseModel):

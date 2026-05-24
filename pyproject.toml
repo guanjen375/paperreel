@@ -54,6 +54,15 @@ sdxl = [
     "torch>=2.2",
 ]
 
+# Optional OCR fallback for scanned / image-only PDFs. Requires the
+# system `tesseract` binary plus per-language packs (e.g. apt install
+# tesseract-ocr tesseract-ocr-chi-tra tesseract-ocr-chi-sim). Without
+# this extra, pages with no extractable text are recorded as empty and
+# flagged in the quality report.
+ocr = [
+    "pytesseract>=0.3",
+]
+
 # Convenience: every local backend at once.
 all = [
     "ollama>=0.3",
@@ -65,6 +74,7 @@ all = [
     "accelerate>=0.30",
     "safetensors>=0.4",
     "torch>=2.2",
+    "pytesseract>=0.3",
 ]
 
 test = ["pytest>=8.0"]

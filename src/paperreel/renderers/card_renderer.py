@@ -91,9 +91,15 @@ class CardRenderer:
         elif vt == VisualType.diagram:
             img = self._teaching_card(scene.title, scene.on_screen_text or scene.narration_text_zh_tw[:120])
         elif vt == VisualType.pdf_image and scene.visual_asset_paths:
-            img = self._pdf_image_card(scene.title, scene.visual_asset_paths[0])
+            img = self._pdf_image_card(
+                scene.title, scene.visual_asset_paths[0],
+                caption=scene.on_screen_text,
+            )
         elif vt == VisualType.generated_image and scene.visual_asset_paths:
-            img = self._pdf_image_card(scene.title, scene.visual_asset_paths[0])
+            img = self._pdf_image_card(
+                scene.title, scene.visual_asset_paths[0],
+                caption=scene.on_screen_text,
+            )
         else:
             img = self._teaching_card(scene.title, scene.on_screen_text or scene.narration_text_zh_tw[:120])
 
@@ -183,15 +189,28 @@ class CardRenderer:
             y += body_font.size + 14
         return img
 
-    def _pdf_image_card(self, title: str, image_path: str) -> Image.Image:
+    def _pdf_image_card(self, title: str, image_path: str,
+                         *, caption: str | None = None) -> Image.Image:
         img = self._base()
         draw = ImageDraw.Draw(img)
         title_font = _load_font(self.font_path, max(36, self.h // 22))
         draw.text((80, 60), title, fill=self.fg, font=title_font)
+
+        # Reserve room for a caption strip when on_screen_text is present
+        # so the inset image doesn't bleed into it. Footer bar (56 px)
+        # is drawn last by _draw_footer.
+        caption_lines: list[str] = []
+        caption_font = None
+        caption_block_h = 0
+        if caption:
+            caption_font = _load_font(self.font_path, max(26, self.h // 32))
+            max_chars = max(20, self.w // (caption_font.size or 20) // 2)
+            caption_lines = _wrap_cjk(caption, max_chars)[:3]
+            caption_block_h = (caption_font.size + 14) * len(caption_lines) + 24
         try:
             inset = Image.open(image_path).convert("RGB")
             max_w = self.w - 160
-            max_h = self.h - 260
+            max_h = self.h - 260 - caption_block_h
             inset.thumbnail((max_w, max_h))
             ox = (self.w - inset.width) // 2
             oy = 140 + max(0, (max_h - inset.height) // 2)
@@ -200,6 +219,13 @@ class CardRenderer:
             draw.text((80, 200), f"[image load failed: {image_path}]",
                       fill=(255, 120, 120),
                       font=_load_font(self.font_path, 28))
+
+        if caption_lines and caption_font is not None:
+            # Caption sits above the footer bar so it's never clipped.
+            y = self.h - 56 - caption_block_h + 12
+            for line in caption_lines:
+                draw.text((80, y), line, fill=self.accent, font=caption_font)
+                y += caption_font.size + 14
         return img
 
     # ---------- helpers ----------
