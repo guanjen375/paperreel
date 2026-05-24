@@ -7,13 +7,22 @@ For each scene:
   must not stall on one bad image.
 - All other visual types are rendered by `CardRenderer` (deterministic,
   CPU, no GPU needed).
+
+Resume model mirrors the audio stage: each rendered card has a sidecar
+``.manifest.json`` describing the visual_type / prompt / on_screen_text /
+renderer config / source-image SHA that produced it. We skip rendering
+only when that hash still matches the current config — so changing the
+background colour, the font path, the SDXL model, or the embedded PDF
+crop all invalidate the cache correctly.
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from ..hashing import hash_inputs
 from ..io_utils import atomic_write_json, read_json
+from ..manifest import manifest_matches, sha256_of, write_manifest
 from ..models import Scene, SceneGraph, SceneStatus, VisualType
 from ..providers.image_base import ImageProvider, make_image_provider
 from ..renderers.card_renderer import CardRenderer
@@ -27,6 +36,89 @@ def paths_for(project_root: str | Path) -> dict[str, Path]:
         "visuals_dir": root / "assets" / "visuals",
         "generated_dir": root / "assets" / "generated",
     }
+
+
+def _renderer_config_signature(rcfg: dict) -> dict[str, Any]:
+    """Only the renderer fields that actually affect pixel output."""
+    return {
+        "resolution": list(rcfg.get("resolution", [1920, 1080])),
+        "background_color": rcfg.get("background_color"),
+        "text_color": rcfg.get("text_color"),
+        "accent_color": rcfg.get("accent_color"),
+        "font_path": rcfg.get("font_path"),
+    }
+
+
+def _image_config_signature(icfg: dict) -> dict[str, Any]:
+    """Only the SDXL fields that actually affect what the model emits.
+
+    Excludes runtime knobs like device/dtype: switching cuda <-> cpu or
+    fp16 <-> bf16 should NOT invalidate the cache.
+    """
+    return {
+        "provider": icfg.get("provider"),
+        "model": icfg.get("model"),
+        "num_inference_steps": icfg.get("num_inference_steps"),
+        "guidance_scale": icfg.get("guidance_scale"),
+        "negative_prompt": icfg.get("negative_prompt"),
+    }
+
+
+def _visual_inputs(scene: Scene, rcfg: dict, icfg: dict,
+                   *,
+                   source_asset_path: str | None,
+                   source_asset_sha: str | None) -> dict[str, Any]:
+    """Fully fingerprint one visual artefact.
+
+    ``source_asset_path`` / ``source_asset_sha`` describe the upstream
+    image fed into the card (extracted PDF figure crop, freshly
+    generated SDXL image) — both None for pure text cards. The caller
+    is responsible for normalising this BEFORE the scene's
+    ``visual_asset_paths`` gets rewritten to point at the rendered card
+    itself, so the fingerprint is identical on first-render and on
+    resume-skip.
+    """
+    return {
+        "schema": "visual_artifact_v3",
+        "scene_id": scene.scene_id,
+        "visual_type": scene.visual_type.value,
+        "visual_prompt": scene.visual_prompt,
+        "on_screen_text": scene.on_screen_text,
+        "title": scene.title,
+        "narration_len": len(scene.narration_text_zh_tw),
+        "source_pages": list(scene.source_pages),
+        "source_asset_path": source_asset_path,
+        "source_asset_sha256": source_asset_sha,
+        "renderer": _renderer_config_signature(rcfg),
+        "image": _image_config_signature(icfg)
+            if scene.visual_type == VisualType.generated_image else None,
+    }
+
+
+def _visual_input_hash(scene: Scene, rcfg: dict, icfg: dict,
+                       *,
+                       source_asset_path: str | None,
+                       source_asset_sha: str | None) -> str:
+    return hash_inputs(
+        "visual_artifact_v3",
+        _visual_inputs(scene, rcfg, icfg,
+                       source_asset_path=source_asset_path,
+                       source_asset_sha=source_asset_sha),
+    )
+
+
+def _external_source_for(scene: Scene, out_path: Path) -> str | None:
+    """The upstream source path the renderer would consume — None when
+    the only entry in ``visual_asset_paths`` is the rendered card itself
+    (i.e. this scene has been visited before and is now self-referential).
+    Centralised so the hash is computed identically across the fresh
+    render path and the resume short-circuit."""
+    if not scene.visual_asset_paths:
+        return None
+    first = scene.visual_asset_paths[0]
+    if Path(first) == out_path:
+        return None
+    return first
 
 
 def _generate_sdxl_asset(scene: Scene, out_path: Path,
@@ -58,8 +150,12 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
         accent=rcfg.get("accent_color", "#22D3EE"),
         font_path=rcfg.get("font_path"),
     )
-    input_hash = hash_inputs("visuals_v1", rcfg, icfg)
-    db.start_stage("visuals", input_hash)
+    db.start_stage(
+        "visuals",
+        hash_inputs("visuals_stage_v2",
+                    _renderer_config_signature(rcfg),
+                    _image_config_signature(icfg)),
+    )
 
     # Lazily created on first generated_image scene; reused across the whole
     # stage so the SDXL pipeline (~7 GB) is loaded once, not per-scene.
@@ -86,9 +182,27 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
 
     for sc in graph.scenes:
         out_path = p["visuals_dir"] / f"{sc.scene_id}.png"
-        if resume and sc.visual_asset_paths and Path(sc.visual_asset_paths[0]).exists():
-            new_scenes.append(sc)
-            continue
+
+        # Resume: hash-based skip. Compute the expected hash from the
+        # scene's current inputs and compare against the cached card's
+        # sidecar manifest. Anything that affects rendered pixels (visual
+        # type, prompt, on_screen_text, renderer colours / font, source
+        # crop SHA) is in the hash, so cache invalidation is precise.
+        if resume and out_path.exists():
+            src_path = _external_source_for(sc, out_path)
+            src_sha = sha256_of(src_path)
+            expected = _visual_input_hash(sc, rcfg, icfg,
+                                          source_asset_path=src_path,
+                                          source_asset_sha=src_sha)
+            if manifest_matches(out_path, expected):
+                sc = sc.model_copy(update={
+                    "visual_asset_paths": [str(out_path)],
+                    "status": (SceneStatus.visual_done
+                               if sc.status == SceneStatus.audio_done
+                               else sc.status),
+                })
+                new_scenes.append(sc)
+                continue
         if sc.status == SceneStatus.failed:
             new_scenes.append(sc)
             continue
@@ -98,7 +212,10 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
         #    visual_asset_paths is rewritten to point at the final card so
         #    later stages (segments / quality) read the renderable PNG.
         sdxl_src: str | None = None
-        if sc.visual_type == VisualType.generated_image and not sc.visual_asset_paths:
+        if sc.visual_type == VisualType.generated_image and (
+            not sc.visual_asset_paths
+            or sc.visual_asset_paths[0] == str(out_path)
+        ):
             if image_provider is None and not image_provider_failed:
                 try:
                     image_provider = make_image_provider(icfg)
@@ -152,6 +269,28 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
                 new_scenes.append(sc)
                 continue
 
+        # Manifest captures the inputs that actually mattered for *this*
+        # render — including the SHA of the upstream image so a freshly
+        # regenerated SDXL output or swapped PDF crop invalidates next
+        # time. Hash uses the same _external_source_for() helper as the
+        # resume short-circuit above, so first-render and skip-on-resume
+        # compute identical fingerprints.
+        consumed_src = _external_source_for(sc, out_path)
+        consumed_sha = sha256_of(consumed_src)
+        manifest_hash = _visual_input_hash(sc, rcfg, icfg,
+                                           source_asset_path=consumed_src,
+                                           source_asset_sha=consumed_sha)
+        write_manifest(
+            out_path,
+            stage="visuals",
+            scene_id=sc.scene_id,
+            input_hash=manifest_hash,
+            inputs=_visual_inputs(sc, rcfg, icfg,
+                                  source_asset_path=consumed_src,
+                                  source_asset_sha=consumed_sha),
+            extra={"rendered_visual_type": sc.visual_type.value},
+        )
+
         # visual_asset_paths[0] must be the final renderable card; SDXL
         # source stays on disk under assets/generated/ but isn't tracked
         # here (downstream readers always use [0]).
@@ -162,7 +301,8 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
             "status": new_status,
         })
         db.register_artifact(out_path, stage="visuals", scene_id=sc.scene_id,
-                             media_type="image/png")
+                             media_type="image/png",
+                             provenance={"input_hash": manifest_hash})
         db.upsert_scene(sc.scene_id, sc.chapter_id, sc.status.value,
                         sc.input_hash, sc.model_dump(mode="json"))
         new_scenes.append(sc)

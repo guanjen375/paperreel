@@ -1,10 +1,20 @@
-"""Stage 8 — mux per-scene PNG + WAV into MP4 segments."""
+"""Stage 8 — mux per-scene PNG + WAV into MP4 segments.
+
+Resume model: each ``outputs/segments/<scene_id>.mp4`` carries a sidecar
+manifest fingerprinted from (audio manifest hash, visual manifest hash,
+fps, codec, pixel_format, resolution, ken_burns). When the upstream
+audio or visual is invalidated and regenerated, the corresponding
+segment is automatically invalidated too — the chain of input_hash
+references composes correctly.
+"""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from ..hashing import hash_inputs
 from ..io_utils import atomic_write_json, read_json
+from ..manifest import manifest_matches, read_manifest, sha256_of, write_manifest
 from ..models import RenderPlan, RenderPlanEntry, Scene, SceneGraph, SceneStatus
 from ..renderers.ffmpeg_renderer import (FfmpegError, FfmpegMissing,
                                          have_ffmpeg, render_still_with_audio)
@@ -20,6 +30,50 @@ def paths_for(project_root: str | Path) -> dict[str, Path]:
     }
 
 
+def _segment_codec_signature(rcfg: dict, fps: int,
+                             res: tuple[int, int]) -> dict[str, Any]:
+    """Fields that affect the muxed MP4 bytes."""
+    return {
+        "fps": fps,
+        "resolution": list(res),
+        "video_codec": rcfg.get("video_codec"),
+        "audio_codec": rcfg.get("audio_codec"),
+        "pixel_format": rcfg.get("pixel_format"),
+        "ken_burns": bool(rcfg.get("ken_burns", False)),
+    }
+
+
+def _upstream_hash(path: str | None) -> str | None:
+    """Pull the upstream stage's input_hash off its sidecar manifest;
+    fall back to the file's own SHA when no manifest exists (so older
+    artefacts produced before the manifest rollout still chain)."""
+    if not path:
+        return None
+    m = read_manifest(path)
+    if m and m.get("input_hash"):
+        return m["input_hash"]
+    return sha256_of(path)
+
+
+def _segment_inputs(scene: Scene, codec_sig: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "segment_artifact_v2",
+        "scene_id": scene.scene_id,
+        "audio_input_hash": _upstream_hash(scene.audio_path),
+        "visual_input_hash": _upstream_hash(
+            scene.visual_asset_paths[0] if scene.visual_asset_paths else None
+        ),
+        "duration_sec": (scene.actual_duration_sec
+                         or scene.estimated_duration_sec),
+        "codec": codec_sig,
+    }
+
+
+def _segment_input_hash(scene: Scene, codec_sig: dict[str, Any]) -> str:
+    return hash_inputs("segment_artifact_v2",
+                       _segment_inputs(scene, codec_sig))
+
+
 def run(*, project_root: str | Path, db: StateDB, config: dict,
         resume: bool = True, max_retries: int = 2) -> tuple[RenderPlan, SceneGraph]:
     p = paths_for(project_root)
@@ -27,6 +81,7 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
     rcfg = config.get("renderer", {})
     ffbin = rcfg.get("ffmpeg_binary", "ffmpeg")
     res = tuple(rcfg.get("resolution", [1920, 1080]))
+    res_tuple: tuple[int, int] = (int(res[0]), int(res[1]))
     fps = int(rcfg.get("fps", 30))
 
     if not have_ffmpeg(ffbin):
@@ -36,8 +91,9 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
             "then retry."
         )
 
-    input_hash = hash_inputs("segments_v1", rcfg, fps, res)
-    db.start_stage("segments", input_hash)
+    codec_sig = _segment_codec_signature(rcfg, fps, res_tuple)
+    db.start_stage("segments",
+                   hash_inputs("segments_stage_v2", codec_sig))
 
     entries: list[RenderPlanEntry] = []
     new_scenes: list[Scene] = []
@@ -49,14 +105,25 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
             new_scenes.append(sc)
             continue
         duration = sc.actual_duration_sec or sc.estimated_duration_sec
-        if resume and sc.rendered_video_path and Path(sc.rendered_video_path).exists():
+        expected_hash = _segment_input_hash(sc, codec_sig)
+
+        # Resume: skip only when the segment's manifest matches the hash
+        # we'd produce now. This composes with upstream — if the audio
+        # or visual was regenerated, their manifest hash changed, so
+        # this scene's expected_hash changes, and the segment rebuilds.
+        if resume and manifest_matches(out, expected_hash):
+            sc = sc.model_copy(update={
+                "rendered_video_path": str(out),
+                "status": (SceneStatus.rendered
+                           if sc.status != SceneStatus.failed else sc.status),
+            })
             entries.append(RenderPlanEntry(
                 scene_id=sc.scene_id,
                 visual_type=sc.visual_type,
                 visual_asset_paths=sc.visual_asset_paths,
                 audio_path=sc.audio_path,
                 subtitle_path=sc.subtitle_path,
-                output_path=sc.rendered_video_path,
+                output_path=str(out),
                 duration_sec=duration,
             ))
             new_scenes.append(sc)
@@ -69,7 +136,7 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
                     sc.visual_asset_paths[0], sc.audio_path, out,
                     duration_sec=duration,
                     fps=fps,
-                    resolution=(int(res[0]), int(res[1])),
+                    resolution=res_tuple,
                     video_codec=rcfg.get("video_codec", "libx264"),
                     audio_codec=rcfg.get("audio_codec", "aac"),
                     pixel_format=rcfg.get("pixel_format", "yuv420p"),
@@ -95,13 +162,22 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
             failures.append(sc.scene_id)
             new_scenes.append(sc)
             continue
+        write_manifest(
+            out,
+            stage="segments",
+            scene_id=sc.scene_id,
+            input_hash=expected_hash,
+            inputs=_segment_inputs(sc, codec_sig),
+            extra={"duration_sec": duration},
+        )
         sc = sc.model_copy(update={
             "rendered_video_path": str(out),
             "status": SceneStatus.rendered,
             "last_error": None,
         })
         db.register_artifact(out, stage="segments", scene_id=sc.scene_id,
-                             media_type="video/mp4", duration_sec=duration)
+                             media_type="video/mp4", duration_sec=duration,
+                             provenance={"input_hash": expected_hash})
         db.upsert_scene(sc.scene_id, sc.chapter_id, sc.status.value,
                         sc.input_hash, sc.model_dump(mode="json"))
         new_scenes.append(sc)
@@ -118,7 +194,7 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
     plan = RenderPlan(
         project=graph.project,
         fps=fps,
-        resolution=(int(res[0]), int(res[1])),
+        resolution=res_tuple,
         final_output=str(Path(project_root) / "outputs" / "final.mp4"),
         entries=entries,
     )
