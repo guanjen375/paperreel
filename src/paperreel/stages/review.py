@@ -126,6 +126,14 @@ def run(*, project_root: str | Path, db: StateDB, config: dict
                     "configured max", sc.scene_id,
                 ))
         # Sketchbook-only: enforce evidence on factual scenes.
+        prompt_text = " ".join([sc.title, sc.visual_prompt or "", sc.on_screen_text or ""]).lower()
+        if any(w in prompt_text for w in ("stamp", "seal", "logo", "印章", "圖章", "標誌")):
+            if sc.visual_type in (VisualType.generated_image, VisualType.pdf_image) and not sc.evidence_spans:
+                findings.append(_finding(
+                    "decorative_visual_risk", "warning",
+                    "stamp/logo/seal-like visual is not backed by evidence",
+                    sc.scene_id,
+                ))
         if sketchbook and (sc.scene_kind or "") in {
             "deadline_timeline", "penalty_table", "checklist",
             "risk_warning", "do_dont", "key_number", "source_crop",
@@ -168,6 +176,9 @@ def run(*, project_root: str | Path, db: StateDB, config: dict
             duration_status["message"],
         ))
 
+    expected_fact_summary = _expected_fact_summary(profile, graph)
+    findings.extend(expected_fact_summary["findings"])
+
     # Optional local-VLM scoring. Disabled unless model is set.
     vlm_cfg = de_cfg.get("vlm_review", {}) or {}
     vlm_results: list[dict] = []
@@ -207,6 +218,10 @@ def run(*, project_root: str | Path, db: StateDB, config: dict
         "coverage_pct": round(coverage_pct, 1),
         "covered_pages": sorted(coverage_pages),
         "duration": duration_status,
+        "generated_image_count": sum(
+            1 for sc in graph.scenes if sc.visual_type == VisualType.generated_image
+        ),
+        "expected_fact_types": expected_fact_summary["types"],
         "findings": findings,
         "vlm_results": vlm_results,
         "artefacts": {
@@ -253,6 +268,90 @@ def _as_script_scene(scene):
         evidence_spans=list(scene.evidence_spans),
         facts=list(scene.facts),
     )
+
+
+def _expected_fact_summary(profile: DocProfile | None, graph: SceneGraph) -> dict[str, Any]:
+    if profile is None:
+        return {"types": [], "findings": []}
+    kind = profile.doc_kind.value
+    expected = {
+        "contract": {
+            "deadlines": ("期限", "出發前", "天內", "天以上", "deadline"),
+            "penalty_tiers": ("全額訂", "30%", "50%", "75%", "100%"),
+            "fees_or_money": ("NT$", "新台幣", "新臺幣", "金額", "3,000"),
+            "required_documents": ("護照", "簽證", "資料", "名單"),
+            "no_refund_or_boarding_risk": ("拒絕登船", "拒絕入境", "不予退款", "恕不退還", "概不負責"),
+            "insurance_or_health": ("保險", "疾病", "適航證明", "醫師"),
+            "force_majeure_or_itinerary_change": ("不可抗力", "行程", "變更", "無退費義務"),
+            "personal_data": ("個人資料", "蒐集", "處理", "利用", "傳輸"),
+        },
+        "form": {
+            "required_fields": ("姓名", "身分證", "護照", "簽名", "日期"),
+            "required_documents": ("附件", "資料", "證明", "護照", "簽證"),
+            "deadlines": ("期限", "前", "內"),
+        },
+        "policy": {
+            "scope": ("適用", "範圍", "對象"),
+            "obligations": ("應", "須", "不得", "必須"),
+            "penalties_or_risks": ("違反", "罰", "風險", "責任"),
+        },
+        "paper": {
+            "problem_or_goal": ("problem", "目標", "問題", "研究"),
+            "method": ("method", "方法", "模型", "實驗"),
+            "results": ("result", "結果", "%", "提升"),
+            "limitations": ("limit", "限制", "未來"),
+        },
+        "manual": {
+            "prerequisites": ("前置", "準備", "需求"),
+            "steps": ("步驟", "操作", "安裝", "設定"),
+            "warnings": ("警告", "注意", "請勿", "不得"),
+            "troubleshooting": ("故障", "排除", "問題"),
+        },
+        "report": {
+            "summary": ("摘要", "summary", "重點"),
+            "metrics": ("%", "金額", "指標", "成長", "下降"),
+            "risks": ("風險", "risk"),
+            "recommendations": ("建議", "recommend"),
+        },
+        "slides": {
+            "sections": ("章節", "section", "重點"),
+            "takeaways": ("takeaway", "重點", "回顧"),
+        },
+    }.get(kind, {})
+    if not expected:
+        return {"types": [], "findings": []}
+
+    blob = _graph_text_blob(graph)
+    types: list[dict[str, Any]] = []
+    findings: list[dict] = []
+    for type_name, needles in expected.items():
+        present = any(n.lower() in blob for n in needles)
+        types.append({
+            "type": type_name,
+            "present": present,
+            "needles": list(needles),
+        })
+        if not present:
+            findings.append(_finding(
+                "expected_fact_type_missing", "warning",
+                f"doc_kind={kind} expected fact type missing: {type_name}",
+            ))
+    return {"types": types, "findings": findings}
+
+
+def _graph_text_blob(graph: SceneGraph) -> str:
+    parts: list[str] = []
+    for sc in graph.scenes:
+        parts.extend([sc.title, sc.narration_text_zh_tw, sc.on_screen_text or ""])
+        for fact in sc.facts:
+            parts.extend([fact.label, fact.value])
+        for ev in sc.evidence_spans:
+            parts.extend([ev.label or "", ev.value or "", ev.quote or ""])
+        try:
+            parts.append(json.dumps(sc.layout_payload, ensure_ascii=False))
+        except TypeError:
+            parts.append(str(sc.layout_payload))
+    return "\n".join(parts).lower()
 
 
 def _duration_status(duration_plan: dict, graph: SceneGraph) -> dict:

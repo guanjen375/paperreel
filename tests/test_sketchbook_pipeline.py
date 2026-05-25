@@ -81,13 +81,30 @@ def sketchbook_cfg() -> dict:
 
 
 def _drive_through_script(project_dir: Path, pdf: Path,
-                           cfg: dict) -> tuple[StateDB, dict]:
+                           cfg: dict, *,
+                           target_minutes: str = "auto") -> tuple[StateDB, dict]:
     db = StateDB(project_dir / "state.sqlite")
     ingest_pdf.run(pdf_path=pdf, project_root=project_dir, db=db, config=cfg)
     build_outline.run(project_root=project_dir, project_name=project_dir.name,
-                       db=db, config=cfg, target_minutes="auto")
+                       db=db, config=cfg, target_minutes=target_minutes)
     script = write_script.run(project_root=project_dir, db=db, config=cfg)
     return db, script.model_dump(mode="json")
+
+
+def test_normal_default_config_uses_explainer_without_style(
+    project_dir: Path, contract_pdf: Path,
+) -> None:
+    cfg = load_config()
+    cfg = _deep_merge(cfg, {
+        "tts": {"sample_rate_hz": 24000},
+        "renderer": {"resolution": [1280, 720], "fps": 24},
+        "doc_explainer": {"grounding": {"quote_match_min_ratio": 0.45}},
+    })
+    _drive_through_script(project_dir, contract_pdf, cfg, target_minutes="2")
+    blob = read_json(project_dir / "intermediate" / "script.json")
+    assert blob["scenes"]
+    assert any(sc.get("scene_kind") for sc in blob["scenes"])
+    assert all(sc["visual_type"] != "generated_image" for sc in blob["scenes"])
 
 
 def test_sketchbook_classifies_contract(project_dir: Path, contract_pdf: Path,
@@ -161,21 +178,73 @@ def test_sketchbook_renders_visuals_via_sketchbook_renderer(
     assert not generated_dir.exists() or not list(generated_dir.glob("*.png"))
 
 
-def test_default_mode_still_works(project_dir: Path, tiny_pdf: Path,
-                                    test_cfg: dict) -> None:
-    """Regression: nothing about adding sketchbook should break the
-    existing default storyboard."""
+def test_legacy_default_mode_still_works(project_dir: Path, tiny_pdf: Path,
+                                         test_cfg: dict) -> None:
+    """Regression: explicit style=default keeps the legacy storyboard."""
+    legacy_cfg = _deep_merge(test_cfg, {"project": {"style": "default"}})
     db = StateDB(project_dir / "state.sqlite")
     ingest_pdf.run(pdf_path=tiny_pdf, project_root=project_dir, db=db,
-                    config=test_cfg)
+                    config=legacy_cfg)
     build_outline.run(project_root=project_dir, project_name=project_dir.name,
-                       db=db, config=test_cfg, target_minutes="auto")
-    script = write_script.run(project_root=project_dir, db=db, config=test_cfg)
+                       db=db, config=legacy_cfg, target_minutes="auto")
+    script = write_script.run(project_root=project_dir, db=db, config=legacy_cfg)
     assert script.scenes
     # No scene_kind tags in default mode.
     for sc in script.scenes:
         assert sc.scene_kind is None
     db.close()
+
+
+def test_target_minutes_inserts_grounded_expansion_scenes(
+    tmp_path: Path, contract_pdf: Path, sketchbook_cfg: dict,
+) -> None:
+    project = tmp_path / "target5"
+    project.mkdir()
+    _db, script_blob = _drive_through_script(
+        project, contract_pdf, sketchbook_cfg, target_minutes="5",
+    )
+    expansions = [
+        sc for sc in script_blob["scenes"]
+        if sc.get("layout_payload", {}).get("expansion_of")
+    ]
+    assert expansions, "under-budget target did not insert expansion scenes"
+    assert all(sc["evidence_spans"] for sc in expansions)
+    plan = read_json(project / "intermediate" / "sketchbook_plan.json")
+    assert plan["expansion_scene_count"] > 0
+    assert plan["actual_estimated_seconds"] >= plan["min_seconds"]
+
+
+def test_target_minutes_changes_scene_budget(
+    tmp_path: Path, contract_pdf: Path, sketchbook_cfg: dict,
+) -> None:
+    p2 = tmp_path / "target2"
+    p5 = tmp_path / "target5"
+    p2.mkdir(); p5.mkdir()
+    _db2, script2 = _drive_through_script(
+        p2, contract_pdf, sketchbook_cfg, target_minutes="2",
+    )
+    _db5, script5 = _drive_through_script(
+        p5, contract_pdf, sketchbook_cfg, target_minutes="5",
+    )
+    assert len(script5["scenes"]) > len(script2["scenes"])
+    assert script5["total_estimated_minutes"] > script2["total_estimated_minutes"]
+
+
+def test_reference_sample_contract_tiers_smoke(
+    tmp_path: Path, sketchbook_cfg: dict,
+) -> None:
+    sample = Path("dev_examples/reference/sample.pdf")
+    if not sample.exists():
+        pytest.skip("reference sample PDF not present")
+    project = tmp_path / "sample_contract"
+    project.mkdir()
+    _db, script_blob = _drive_through_script(
+        project, sample, sketchbook_cfg, target_minutes="5",
+    )
+    text_blob = json.dumps(script_blob, ensure_ascii=False)
+    for token in ("全額訂", "30%", "50%", "75%", "100%", "3,000",
+                  "出發前45", "出發前30", "護照", "簽證", "保險"):
+        assert token in text_blob
 
 
 def test_review_stage_produces_artefacts(

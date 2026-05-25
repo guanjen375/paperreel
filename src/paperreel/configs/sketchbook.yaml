@@ -1,5 +1,5 @@
 # Sketchbook / document_explainer overlay — apply with:
-#   paperreel <pdf> --project ./runs/my_video --style sketchbook
+#   paperreel <pdf> --project ./runs/my_video --target-minutes 5
 #   paperreel <pdf> --project ./runs/my_video --config sketchbook
 # Tuned for ordinary public machines: small LLM, no SDXL, deterministic
 # Pillow renderer drives every visual.

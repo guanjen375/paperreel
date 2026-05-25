@@ -31,6 +31,12 @@ class _Pattern:
 # Order matters when patterns overlap (e.g. a deadline that also
 # contains a percentage). We try longest / most specific first.
 _PATTERNS: tuple[_Pattern, ...] = (
+    _Pattern("deadline_range", re.compile(
+        r"((?:出發|開始|旅遊開始)?前\s*\d+\s*(?:-|~|–|—|至)\s*\d+\s*(?:天|日)(?:以上|以內|內|前)?)",
+    ), "期限", Importance.high),
+    _Pattern("deadline_threshold", re.compile(
+        r"((?:出發|開始|旅遊開始)?前\s*\d+\s*(?:天|日)(?:（含\s*\d+\s*(?:天|日)內）)?(?:以上|以內|內|前)?)",
+    ), "期限", Importance.high),
     _Pattern("deadline", re.compile(
         r"(?:於|在|限|應於)?\s*(\d+\s*(?:天|日|個月|月|年|工作天|工作日))\s*(?:內|前|以內)",
     ), "期限", Importance.high),
@@ -54,7 +60,7 @@ _PATTERNS: tuple[_Pattern, ...] = (
         r"(百分之[一二三四五六七八九十百零〇\d]+)",
     ), "百分比", Importance.high),
     _Pattern("money", re.compile(
-        r"((?:NT\$|US\$|USD|TWD|新台幣|台幣|美金|美元|歐元|港幣|人民幣)\s*[\d,]+(?:\.\d+)?(?:\s*(?:元|圓))?)",
+        r"((?:NT\$|US\$|USD|TWD|新台幣|新臺幣|台幣|臺幣|美金|美元|歐元|港幣|人民幣|NTD)\s*[\d,]+(?:\.\d+)?(?:\s*(?:元|圓))?)",
     ), "金額", Importance.high),
     _Pattern("money_plain", re.compile(
         r"(\d{1,3}(?:,\d{3})+\s*(?:元|圓|塊))",
@@ -140,9 +146,9 @@ def extract_from_pages(pages: dict[int, str]) -> dict[int, list[tuple[Fact, Evid
 # ---------- scene-kind specific filters ----------
 
 _TIMELINE_KINDS = {"deadline", "deadline_cjk", "absolute_date"}
-_PENALTY_KEYWORDS = ("違約", "解約", "賠償", "退款", "罰款", "penalty", "refund")
-_RISK_KEYWORDS = ("風險", "警告", "注意", "禁止", "不得", "warning", "caution")
-_OBLIGATION_KEYWORDS = ("應", "需", "必須", "提供", "繳交", "shall", "must")
+_PENALTY_KEYWORDS = ("違約", "解約", "賠償", "退款", "退還", "取消", "取消費", "罰款", "費用", "手續費", "變更", "更改", "更動", "不予退款", "無退費", "penalty", "refund")
+_RISK_KEYWORDS = ("風險", "警告", "注意", "禁止", "不得", "拒絕登船", "拒絕入境", "概不負責", "恕不退還", "不予退款", "無退費", "不可抗力", "無退費義務", "不負任何退款", "自付費用", "無法更動", "更動", "保險", "疾病", "適航證明", "warning", "caution")
+_OBLIGATION_KEYWORDS = ("應", "需", "須", "必須", "務必", "請", "提供", "繳交", "繳付", "繳納", "攜帶", "投保", "檢查", "遵守", "簽名", "護照", "簽證", "資料", "shall", "must")
 
 
 def group_for_scene_kind(scene_kind: str,
@@ -168,17 +174,31 @@ def group_for_scene_kind(scene_kind: str,
 
     if scene_kind == "penalty_table":
         rows: list[dict] = []
+        seen: set[tuple[int, str, str]] = set()
+        for page, text in sorted(page_text.items()):
+            for row in _extract_penalty_rows(page, text, max_items=max_items * 2):
+                key = (row["page"], row["condition"], row["value"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(row)
         for page, items in sorted(page_facts.items()):
             text = page_text.get(page, "")
             for fact, span in items:
-                if fact.label in ("百分比", "金額") and any(
+                if (fact.label in ("百分比", "金額") and (any(
                     kw in span.quote for kw in _PENALTY_KEYWORDS
-                ) or _line_has_penalty(text, fact.value):
-                    rows.append({
+                ) or _line_has_penalty(text, fact.value))):
+                    row = {
                         "condition": _short_context(span.quote, fact.value),
                         "value": fact.value,
                         "page": page,
-                    })
+                        "text": span.quote,
+                    }
+                    key = (row["page"], row["condition"], row["value"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append(row)
         return {"rows": rows[:max_items]}
 
     if scene_kind == "checklist":
@@ -216,7 +236,11 @@ def group_for_scene_kind(scene_kind: str,
                     risks.append({
                         "text": sent.strip()[:80],
                         "page": page,
+                        "_score": _risk_score(sent),
                     })
+        risks.sort(key=lambda r: r.get("_score", 0), reverse=True)
+        for r in risks:
+            r.pop("_score", None)
         return {"items": risks[:max_items]}
 
     if scene_kind == "do_dont":
@@ -224,9 +248,9 @@ def group_for_scene_kind(scene_kind: str,
         dont_items: list[dict] = []
         for page, text in page_text.items():
             for sent in _split_sentences(text):
-                if any(kw in sent for kw in ("不得", "禁止", "勿", "請勿")):
+                if any(kw in sent for kw in ("不得", "禁止", "勿", "請勿", "無法更動", "恕無法")):
                     dont_items.append({"text": sent.strip()[:60], "page": page})
-                elif any(kw in sent for kw in ("應", "需", "必須", "請")):
+                elif any(kw in sent for kw in ("應", "需", "須", "必須", "請", "務必")):
                     do_items.append({"text": sent.strip()[:60], "page": page})
         return {
             "do": do_items[:max_items],
@@ -249,6 +273,20 @@ def group_for_scene_kind(scene_kind: str,
     return {}
 
 
+def _risk_score(sentence: str) -> int:
+    priority_groups = (
+        ("拒絕登船", "拒絕入境", "不予退款", "恕不退還", "無退費義務"),
+        ("保險", "疾病", "適航證明", "醫師", "自付費用"),
+        ("不可抗力", "行程", "變更", "無法更動", "概不負責"),
+        ("個人資料", "蒐集", "處理", "傳輸", "利用"),
+    )
+    score = 0
+    for weight, group in zip((40, 30, 20, 10), priority_groups):
+        if any(term in sentence for term in group):
+            score += weight
+    return score
+
+
 def _short_context(quote: str, anchor: str, *, max_len: int = 60) -> str:
     """Return a shortened quote that still surrounds ``anchor`` if possible."""
     if anchor and anchor in quote:
@@ -263,7 +301,57 @@ _SENT_SPLIT = re.compile(r"(?<=[。．.!?！？；;])\s*")
 
 
 def _split_sentences(text: str) -> list[str]:
-    return [s for s in _SENT_SPLIT.split(text) if s.strip()]
+    out: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        out.extend(s.strip() for s in _SENT_SPLIT.split(line) if s.strip())
+    return out
+
+
+_COND_PATTERNS = (
+    re.compile(r"((?:郵輪|旅遊)?出發前\s*\d+\s*(?:-|~|–|—|至)\s*\d+\s*(?:天|日)(?:以上|以內|內|前)?)"),
+    re.compile(r"((?:郵輪|旅遊)?出發前\s*\d+\s*(?:天|日)(?:（含\s*\d+\s*(?:天|日)內）)?(?:以上|以內|內|前)?)"),
+    re.compile(r"(\d+\s*(?:-|~|–|—|至)\s*\d+\s*(?:天|日)(?:以上|以內|內|前)?)"),
+    re.compile(r"(\d+\s*(?:天|日)(?:以上|以內|內|前))"),
+)
+_VALUE_PATTERNS = (
+    re.compile(r"(全額訂(?:金|⾦))"),
+    re.compile(r"(全額(?:船艙|艙房|團費)?費用之\s*\d{1,3}(?:\.\d+)?\s*%)"),
+    re.compile(r"(\d{1,3}(?:\.\d+)?\s*%)"),
+    re.compile(r"((?:NT\$|NTD|新台幣|新臺幣|台幣|臺幣)\s*\$?\s*[\d,]+(?:\.\d+)?\s*(?:元|圓)?)"),
+    re.compile(r"(\d{1,3}(?:,\d{3})+\s*(?:元|圓|塊))"),
+    re.compile(r"(不予退款|恕不退還|無退費義務|不得要求[^，。；;]*退[^，。；;]*|恕無法更動[^，。；;]*|無法更動[^，。；;]*)"),
+)
+
+
+def _extract_penalty_rows(page: int, text: str, *, max_items: int) -> list[dict]:
+    rows: list[dict] = []
+    for sent in _split_sentences(text):
+        if not any(kw in sent for kw in _PENALTY_KEYWORDS):
+            continue
+        condition = _first_match(_COND_PATTERNS, sent)
+        value = _first_match(_VALUE_PATTERNS, sent)
+        if not condition or not value:
+            continue
+        rows.append({
+            "condition": _trim_quote(condition, max_len=52),
+            "value": _trim_quote(value, max_len=28),
+            "page": page,
+            "text": _trim_quote(sent, max_len=160),
+        })
+        if len(rows) >= max_items:
+            break
+    return rows
+
+
+def _first_match(patterns: tuple[re.Pattern[str], ...], text: str) -> str:
+    for pat in patterns:
+        m = pat.search(text)
+        if m:
+            return m.group(1)
+    return ""
 
 
 def _line_has_penalty(text: str, value: str) -> bool:

@@ -113,6 +113,21 @@ def test_cover_scene_does_not_require_evidence() -> None:
     assert issues == []
 
 
+def test_source_page_must_exist() -> None:
+    sc = _scene(
+        "paragraph_card",
+        source_pages=[99],
+        evidence_spans=[],
+        facts=[],
+    )
+    issues = grounding.validate_scene(
+        sc, page_text=PAGE_TEXT,
+        min_quote_ratio=0.55,
+        require_evidence_for_facts=True,
+    )
+    assert any(i.code == "bad_source_page" for i in issues)
+
+
 def test_validate_scenes_collects_all_issues() -> None:
     scenes = [
         _scene("deadline_timeline"),

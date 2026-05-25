@@ -26,13 +26,15 @@ _KEYWORDS: dict[DocKind, list[str]] = {
         "甲方", "乙方", "丙方", "雙方", "簽署", "簽訂", "簽約",
         "本合約", "本契約", "本協議", "條款", "違約", "違約金",
         "賠償", "解約", "終止", "授權", "授權範圍", "費用",
-        "付款", "預付", "尾款", "保證金", "押金",
+        "付款", "預付", "尾款", "保證金", "押金", "訂金",
+        "取消費用", "取消者", "退費", "不予退款", "概不負責",
+        "旅客", "郵輪", "護照", "簽證",
         "agreement", "contract", "shall", "hereby", "obligation",
         "warranty", "indemnif",
     ],
     DocKind.form: [
         "申請書", "申請表", "請填寫", "請勾選", "個人資料",
-        "姓名", "身分證", "護照", "簽名", "日期",
+        "姓名", "身分證", "護照", "簽名", "蓋章", "日期",
         "聯絡電話", "電子郵件", "地址", "□", "☐",
         "form", "please fill", "tick",
     ],
@@ -59,6 +61,7 @@ _KEYWORDS: dict[DocKind, list[str]] = {
         "政策", "辦法", "規範", "條例", "守則", "適用範圍",
         "適用對象", "本辦法", "本規範", "本守則", "違反",
         "policy", "compliance", "applies to", "regulation",
+        "防疫措施", "公告", "個人資料保護",
     ],
     DocKind.slides: [
         # Slides rarely carry the words above; the structural detector
@@ -90,7 +93,7 @@ _MONEY_PATTERN = re.compile(
 _STORYBOARDS: dict[DocKind, list[str]] = {
     DocKind.contract: [
         "cover", "section_intro", "deadline_timeline", "penalty_table",
-        "checklist", "risk_warning", "do_dont", "recap_card",
+        "checklist", "risk_warning", "do_dont", "key_number", "recap_card",
     ],
     DocKind.form: [
         "cover", "section_intro", "checklist", "deadline_timeline",
@@ -106,7 +109,7 @@ _STORYBOARDS: dict[DocKind, list[str]] = {
     ],
     DocKind.report: [
         "cover", "section_intro", "key_number", "key_number",
-        "paragraph_card", "checklist", "recap_card",
+        "risk_warning", "checklist", "recap_card",
     ],
     DocKind.policy: [
         "cover", "section_intro", "checklist", "risk_warning",

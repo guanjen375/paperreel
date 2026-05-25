@@ -116,7 +116,7 @@ class SketchbookRenderer:
             "max_bullets": 6,
             "max_timeline_events": 6,
             "max_table_rows": 6,
-            "max_checklist_items": 8,
+            "max_checklist_items": 6,
         }
         if cards_cfg:
             self.cards.update({k: v for k, v in cards_cfg.items() if v is not None})

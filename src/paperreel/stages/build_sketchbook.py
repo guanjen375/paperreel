@@ -101,9 +101,22 @@ def build_sketchbook_scenes(
     # Renumber scene_ids so every id is canonical and unique.
     scenes = _renumber(scenes)
 
-    # Duration controller — trim / pad to hit depth window.
+    # Duration controller — trim / pad to hit the requested window.
+    # select_scenes only decides where expansion is allowed; we insert
+    # the actual grounded expansion cards here so script.json and
+    # scene_graph.json reflect the target length.
     selected, plan_report = select_scenes(scenes, duration)
+    selected = _insert_expansion_scenes(selected, plan_report)
     selected = _renumber(selected)
+    plan_report["actual_scene_count"] = len(selected)
+    plan_report["actual_estimated_seconds"] = round(
+        sum(estimated_seconds(s) for s in selected), 1
+    )
+    if selected and plan_report["actual_estimated_seconds"] < duration.min_seconds:
+        plan_report["under_target_reason"] = (
+            "not enough distinct grounded facts/evidence to expand without "
+            "repeating the same scene"
+        )
 
     # Optional LLM narration polish — keeps all numbers + evidence
     # intact, only rewrites the prose.
@@ -199,15 +212,17 @@ def _scene_from_kind(*, kind: str, chapter_id: str, scene_no: int,
     evidence: list[EvidenceSpan] = []
     used_pages: set[int] = set()
 
-    def _collect(values: list[dict]) -> None:
+    def _collect(values: list[dict], fallback_label: str | None = None) -> None:
         for v in values:
             page = v.get("page")
             if not isinstance(page, int):
                 continue
             used_pages.add(page)
+            value = str(v.get("value") or "").strip()
+            matched = False
             # Pair the value back to its evidence span if we can find it.
             for fact, span in page_facts.get(page, []):
-                if fact.value == v.get("value"):
+                if value and fact.value == value:
                     span_idx = len(evidence)
                     evidence.append(span)
                     facts.append(Fact(
@@ -216,7 +231,21 @@ def _scene_from_kind(*, kind: str, chapter_id: str, scene_no: int,
                         importance=fact.importance,
                         evidence_index=span_idx,
                     ))
+                    matched = True
                     break
+            if matched or not fallback_label or not value:
+                continue
+            quote = (v.get("text") or v.get("context") or
+                     v.get("condition") or v.get("label") or value)
+            span_idx = len(evidence)
+            evidence.append(EvidenceSpan(
+                page=page, quote=str(quote)[:160], label=fallback_label,
+                value=value, importance="high",
+            ))
+            facts.append(Fact(
+                label=fallback_label, value=value, importance="high",
+                evidence_index=span_idx,
+            ))
 
     def _evidence_from_quotes(values: list[dict], label: str) -> None:
         for v in values:
@@ -226,7 +255,8 @@ def _scene_from_kind(*, kind: str, chapter_id: str, scene_no: int,
                 continue
             used_pages.add(page)
             evidence.append(EvidenceSpan(
-                page=page, quote=text[:120], label=label,
+                page=page, quote=text[:160], label=label,
+                value=str(v.get("value") or "") or None,
                 importance="high" if label in ("罰則", "風險", "期限") else "medium",
             ))
 
@@ -234,7 +264,7 @@ def _scene_from_kind(*, kind: str, chapter_id: str, scene_no: int,
         events = payload.get("events") or []
         if not events:
             return None
-        _collect(events)
+        _collect(events, "期限")
         title = f"{chapter_title} · 關鍵時程" if chapter_title else "關鍵時程"
         narration = _timeline_narration(events)
         importance = "high"
@@ -243,8 +273,7 @@ def _scene_from_kind(*, kind: str, chapter_id: str, scene_no: int,
         rows = payload.get("rows") or []
         if not rows:
             return None
-        _collect(rows)
-        _evidence_from_quotes(rows, "罰則")
+        _collect(rows, "罰則")
         title = f"{chapter_title} · 罰則與費用" if chapter_title else "罰則與費用"
         narration = _penalty_narration(rows)
         importance = "high"
@@ -282,7 +311,7 @@ def _scene_from_kind(*, kind: str, chapter_id: str, scene_no: int,
         items = payload.get("items") or []
         if not items:
             return None
-        _collect(items)
+        _collect(items, "關鍵數字")
         title = f"{chapter_title} · 關鍵數字" if chapter_title else "關鍵數字"
         narration = _keynumber_narration(items)
         importance = "high"
@@ -324,7 +353,7 @@ def _scene_from_kind(*, kind: str, chapter_id: str, scene_no: int,
         evidence_spans=evidence,
         layout_payload=payload,
         importance=importance,
-        estimated_duration_sec=22.0,
+        estimated_duration_sec=_duration_for_kind(kind),
     )
 
 
@@ -355,7 +384,7 @@ def _build_recap(outline: LessonOutline, profile: DocProfile,
         scene_id="ch_999_sc_001",
         chapter_id="ch_999",
         title=f"{outline.project or '本片'} · 重點回顧",
-        source_pages=[1],
+        source_pages=sorted({it.get("page") for it in items if it.get("page")}) or [1],
         source_refs=["recap"],
         narration_text_zh_tw=narration,
         on_screen_text="重點回顧",
@@ -366,6 +395,104 @@ def _build_recap(outline: LessonOutline, profile: DocProfile,
         importance="medium",
         estimated_duration_sec=18.0,
     )
+
+
+def _insert_expansion_scenes(scenes: list[ScriptScene],
+                             plan_report: dict) -> list[ScriptScene]:
+    pad_ids = list(plan_report.get("pad_after_scene_ids") or [])
+    if not pad_ids:
+        return scenes
+    counts: dict[str, int] = {}
+    for sid in pad_ids:
+        counts[sid] = counts.get(sid, 0) + 1
+    emitted: dict[str, int] = {}
+    out: list[ScriptScene] = []
+    for sc in scenes:
+        out.append(sc)
+        n = counts.get(sc.scene_id, 0)
+        for _ in range(n):
+            emitted[sc.scene_id] = emitted.get(sc.scene_id, 0) + 1
+            out.append(_build_expansion_scene(sc, emitted[sc.scene_id]))
+    return out
+
+
+def _build_expansion_scene(base: ScriptScene, seq: int) -> ScriptScene:
+    span = base.evidence_spans[(seq - 1) % len(base.evidence_spans)] if base.evidence_spans else None
+    fact = base.facts[(seq - 1) % len(base.facts)] if base.facts else None
+
+    facts: list[Fact] = []
+    evidence: list[EvidenceSpan] = []
+    focus = base.title.split("·")[-1].strip() if "·" in base.title else base.title
+    if span is not None:
+        evidence.append(span)
+    if fact is not None:
+        facts.append(Fact(
+            label=fact.label, value=fact.value, importance=fact.importance,
+            evidence_index=0 if evidence else None,
+        ))
+        focus = f"{fact.label}：{fact.value}"
+
+    quote = (span.quote if span is not None else "").strip()
+    body_parts = [focus]
+    if quote:
+        body_parts.append(f"原文依據：{quote[:90]}")
+    elif base.layout_payload:
+        body_parts.append(_payload_focus(base.layout_payload, seq))
+    body = "\n".join(p for p in body_parts if p)
+    narration = (
+        f"補充說明「{focus}」。"
+        + (f"這張卡只引用同一段來源：{quote[:80]}。" if quote else "這張卡延伸前一張的同一組來源資訊。")
+        + "請把它和前一張卡一起看，避免只記住單一數字而漏掉適用條件。"
+    )
+    return ScriptScene(
+        scene_id=f"{base.scene_id}_ex_{seq:02d}",
+        chapter_id=base.chapter_id,
+        title=(base.title + " · 補充")[:40],
+        source_pages=list(base.source_pages),
+        source_refs=list(base.source_refs),
+        narration_text_zh_tw=narration[:600],
+        on_screen_text=focus[:30],
+        visual_hint="grounded expansion",
+        visual_type=VisualType.sketchbook_card,
+        scene_kind="paragraph_card",
+        facts=facts,
+        evidence_spans=evidence,
+        layout_payload={
+            "body": body[:360],
+            "expansion_of": base.scene_id,
+            "source_kind": base.scene_kind,
+        },
+        importance=base.importance or "medium",
+        estimated_duration_sec=22.0,
+    )
+
+
+def _payload_focus(payload: dict, seq: int) -> str:
+    for key in ("events", "rows", "items", "do", "dont"):
+        values = list(payload.get(key) or [])
+        if not values:
+            continue
+        item = values[(seq - 1) % len(values)]
+        if isinstance(item, dict):
+            text = (item.get("text") or item.get("condition") or
+                    item.get("label") or item.get("context") or "")
+            value = item.get("value") or ""
+            return f"{text} {value}".strip()[:120]
+        return str(item)[:120]
+    return "同一來源中的補充脈絡"
+
+
+def _duration_for_kind(kind: str) -> float:
+    return {
+        "deadline_timeline": 28.0,
+        "penalty_table": 28.0,
+        "checklist": 26.0,
+        "risk_warning": 24.0,
+        "do_dont": 22.0,
+        "key_number": 18.0,
+        "paragraph_card": 22.0,
+        "source_crop": 22.0,
+    }.get(kind, 22.0)
 
 
 # ---------- heuristic narration ----------

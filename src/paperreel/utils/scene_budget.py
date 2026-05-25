@@ -41,6 +41,7 @@ _SECONDS_BY_KIND: dict[str, float] = {
 }
 
 _DEFAULT_SCENE_SECONDS = 22.0
+_EXPANSION_SCENE_SECONDS = 22.0
 
 # Importance ranks — higher number wins when culling.
 _IMPORTANCE_RANK = {"high": 3, "medium": 2, "low": 1}
@@ -111,6 +112,52 @@ def resolve_target(*, depth: str | None, target_minutes: float | str | None
     )
 
 
+def auto_target_minutes(*, page_count: int, cjk_char_count: int,
+                        doc_kind: str | None, depth: str | None = None
+                        ) -> tuple[float, str]:
+    """Pick a useful explainer length when the user leaves target auto.
+
+    This is intentionally conservative: auto should produce a focused
+    overview, not a page-by-page reading. Explicit ``--target-minutes``
+    remains the only normal user-facing length control.
+    """
+    pages = max(1, int(page_count or 1))
+    chars = max(0, int(cjk_char_count or 0))
+    kind = (doc_kind or "unknown").lower()
+    depth_key = (depth or "standard").lower()
+
+    # Dense contracts/policies need more time per page than slides, and
+    # papers/reports benefit from a little more explanation around method
+    # or metric context. The char term keeps long single-page forms from
+    # being under-budgeted.
+    if kind in {"contract", "policy", "form"}:
+        raw = 1.4 + pages * 0.75 + chars / 3600.0
+    elif kind == "paper":
+        raw = 2.0 + pages * 0.55 + chars / 5000.0
+    elif kind == "manual":
+        raw = 1.8 + pages * 0.50 + chars / 5200.0
+    elif kind == "report":
+        raw = 2.0 + pages * 0.60 + chars / 4600.0
+    elif kind == "slides":
+        raw = 1.5 + pages * 0.28 + chars / 6500.0
+    else:
+        raw = 1.8 + pages * 0.45 + chars / 5600.0
+
+    bounds = {
+        "brief": (2.0, 3.0),
+        "standard": (2.5, 6.0),
+        "deep": (5.0, 10.0),
+    }.get(depth_key, (2.5, 6.0))
+    minutes = max(bounds[0], min(bounds[1], raw))
+    # Round to the nearest half-minute so CLI output stays readable.
+    minutes = round(minutes * 2.0) / 2.0
+    rationale = (
+        f"auto explainer target: doc_kind={kind}, pages={pages}, "
+        f"chars={chars}, depth={depth_key} -> {minutes:.1f} min"
+    )
+    return minutes, rationale
+
+
 def estimated_seconds(scene: ScriptScene) -> float:
     """Estimate how long ``scene`` will run; prefers the scene's own
     estimate, falls back to a kind-based table."""
@@ -133,6 +180,20 @@ def _scene_score(scene: ScriptScene) -> float:
     if scene.evidence_spans:
         base += 5.0
     return base
+
+
+def _can_expand(scene: ScriptScene) -> bool:
+    """True when a scene has grounded material worth expanding."""
+    kind = (scene.scene_kind or "paragraph_card").lower()
+    if kind in ("cover", "recap_card", "section_intro"):
+        return False
+    if scene.evidence_spans or scene.facts:
+        return True
+    payload = scene.layout_payload or {}
+    for key in ("events", "rows", "items", "do", "dont"):
+        if payload.get(key):
+            return True
+    return False
 
 
 def select_scenes(scenes: list[ScriptScene], target: DurationTarget
@@ -166,21 +227,33 @@ def select_scenes(scenes: list[ScriptScene], target: DurationTarget
         keep.pop(i)
         keep_seconds = sum(estimated_seconds(s) for s in keep)
 
-    # Pad: when too short, duplicate paragraph cards behind the most
-    # important factual scenes. We don't invent content here — we tell
-    # the caller "expand these scenes". Padding is best-effort.
+    # Pad: when too short, request grounded expansion cards behind the
+    # most important factual scenes. We don't invent content here — we
+    # tell the caller "expand these scenes". The caller inserts distinct
+    # paragraph cards that reuse the original scene's facts/evidence.
     pad_targets: list[str] = []
     if keep_seconds < target.min_seconds:
-        sorted_by_score = sorted(keep, key=_scene_score, reverse=True)
-        for sc in sorted_by_score:
-            if (sc.scene_kind or "").lower() in ("cover", "recap_card",
-                                                  "paragraph_card"):
-                continue
-            if keep_seconds >= target.min_seconds:
-                break
+        sorted_by_score = [
+            sc for sc in sorted(keep, key=_scene_score, reverse=True)
+            if _can_expand(sc)
+        ]
+        # Prevent pathological auto-padding on tiny PDFs. If a document
+        # cannot supply enough grounded scenes for the requested length,
+        # the report explains the residual shortfall.
+        max_expansions = max(len(sorted_by_score) * 4, 0)
+        expansion_count = 0
+        while (keep_seconds < target.min_seconds and sorted_by_score
+               and expansion_count < max_expansions):
+            sc = sorted_by_score[expansion_count % len(sorted_by_score)]
             pad_targets.append(sc.scene_id)
-            keep_seconds += _SECONDS_BY_KIND["paragraph_card"]
+            keep_seconds += _EXPANSION_SCENE_SECONDS
+            expansion_count += 1
             decisions.append(f"pad after {sc.scene_id}")
+        if keep_seconds < target.min_seconds:
+            decisions.append(
+                "under target: not enough grounded factual scenes to "
+                "expand without repeating content"
+            )
 
     report = {
         "depth": target.depth,
@@ -188,7 +261,9 @@ def select_scenes(scenes: list[ScriptScene], target: DurationTarget
         "min_seconds": round(target.min_seconds, 1),
         "max_seconds": round(target.max_seconds, 1),
         "estimated_seconds": round(keep_seconds, 1),
-        "scene_count": len(keep),
+        "scene_count": len(keep) + len(pad_targets),
+        "base_scene_count": len(keep),
+        "expansion_scene_count": len(pad_targets),
         "rationale": target.rationale,
         "decisions": decisions,
         "pad_after_scene_ids": pad_targets,

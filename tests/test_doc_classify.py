@@ -74,6 +74,25 @@ def test_classifier_detects_manual() -> None:
     assert profile.doc_kind == DocKind.manual
 
 
+def test_classifier_detects_form() -> None:
+    sources = _sources([
+        "申請表：請填寫姓名、身分證字號、護照號碼、聯絡電話與電子郵件。"
+        "請勾選同意個人資料蒐集，並於簽名欄簽名或蓋章。",
+    ])
+    profile = doc_classify.classify(sources)
+    assert profile.doc_kind == DocKind.form
+
+
+def test_classifier_detects_policy() -> None:
+    sources = _sources([
+        "本辦法適用範圍為全體員工。員工應遵守資訊安全規範，"
+        "違反本政策者依公司規定懲處。",
+        "本規範包含個人資料保護、防疫措施及合規要求。",
+    ])
+    profile = doc_classify.classify(sources)
+    assert profile.doc_kind == DocKind.policy
+
+
 def test_classifier_unknown_when_nothing_matches() -> None:
     sources = _sources(["天空很藍，今天天氣很好。", "我去公園散步看花。"])
     profile = doc_classify.classify(sources)

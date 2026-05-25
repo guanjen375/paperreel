@@ -6,7 +6,7 @@
 #
 # Apply with:
 #   paperreel <pdf> --project ./runs/my_video \
-#       --style sketchbook --config highend_sketchbook
+#       --target-minutes 5 --config highend_sketchbook
 #
 # Before you run, pull the model:
 #   ollama pull llama3.3:70b-instruct

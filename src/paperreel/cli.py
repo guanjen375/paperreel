@@ -34,9 +34,9 @@ from .state import StateDB
 app = typer.Typer(
     add_completion=False, no_args_is_help=True,
     help=(
-        "PDF -> 繁體中文教學影片 pipeline.\n\n"
-        "Usage: paperreel <pdf> --project <dir>   (shorthand for `paperreel run …`)\n"
-        "Run `paperreel run --help` for full pipeline flags."
+        "PDF -> source-grounded 繁體中文 PDF explainer video.\n\n"
+        "Primary usage: paperreel input.pdf --project runs/demo --target-minutes 5\n"
+        "Only --target-minutes normally controls content length."
     ),
 )
 console = Console()
@@ -266,20 +266,20 @@ def run_pipeline(
         help="Project root — will be created or resumed in place."),
     config: Optional[str] = typer.Option(
         None, "--config", "-c",
-        help="Config overlay: bundled name (e.g. 'bigvram', 'sketchbook', "
-             "'highend_sketchbook') or filesystem path."),
+        help="Advanced: config overlay name or YAML path.",
+        hidden=True),
     style: Optional[str] = typer.Option(
         None, "--style",
-        help="Storyboard style: default | sketchbook | document_explainer. "
-             "Overrides whatever the chosen --config sets."),
+        help="Advanced: default | sketchbook | document_explainer.",
+        hidden=True),
     depth: Optional[str] = typer.Option(
         None, "--depth",
-        help="Sketchbook depth: brief | standard | deep. Drives default "
-             "duration when --target-minutes is not set."),
+        help="Advanced: brief | standard | deep when target is auto.",
+        hidden=True),
     target_minutes: str = typer.Option(
         "auto", "--target-minutes",
-        help="'auto' (estimate from PDF length, default mode) or an "
-             "integer that overrides depth-based duration."),
+        help="Approximate explainer length in minutes, e.g. 2, 5, or 10. "
+             "Use auto to estimate from the PDF."),
     max_hours: float = typer.Option(
         10.0, "--max-hours",
         help="Wall-time budget; pipeline halts when exceeded (next run resumes)."),
@@ -294,7 +294,7 @@ def run_pipeline(
         help="If an `ollama serve` is sharing this terminal, restart it "
              "detached (logs to /tmp/ollama.log) before stage 2."),
 ) -> None:
-    """Generate a 繁中 教學影片 from a PDF.
+    """Generate a source-grounded 繁中 PDF explainer video.
 
     Auto-resumes: re-running on the same --project picks up from the last
     completed stage. Use --force-stage to redo specific stages.
@@ -338,9 +338,13 @@ def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
     console.print()
     console.print(f"[bold]PDF[/]      {Path(pdf).resolve()}")
     console.print(f"[bold]Project[/]  {p['root']}")
-    console.print(f"[bold]Style[/]    {eff_style}  ([dim]depth={eff_depth}[/])")
+    mode = ("source-grounded explainer"
+            if eff_style in ("sketchbook", "document_explainer")
+            else "legacy teaching video")
+    console.print(f"[bold]Mode[/]     {mode}")
     console.print(f"[bold]Target[/]   {target_minutes} min")
-    console.print(f"[bold]Config[/]   {meta.config_overlay or 'default'}")
+    if meta.config_overlay:
+        console.print(f"[bold]Config[/]   {meta.config_overlay}")
     console.print(
         f"[bold]Pipeline[/] {total} stages "
         f"({'render to mp4' if will_render else 'no render — stops after subtitles'})"
@@ -705,8 +709,8 @@ def retry_failed(
 def review(
     project: str = typer.Option(..., "--project", "-p"),
     config: Optional[str] = typer.Option(None, "--config", "-c"),
-    style: Optional[str] = typer.Option(None, "--style"),
-    depth: Optional[str] = typer.Option(None, "--depth"),
+    style: Optional[str] = typer.Option(None, "--style", hidden=True),
+    depth: Optional[str] = typer.Option(None, "--depth", hidden=True),
 ) -> None:
     """Generate outputs/review/{contact_sheet.jpg, storyboard.html,
     semantic_quality.json} so you can eyeball pacing + layout without

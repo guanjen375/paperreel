@@ -58,6 +58,7 @@ def test_cfg() -> dict:
     because the autouse fixture above replaces them with fakes."""
     cfg = load_config()
     overrides = {
+        "project": {"style": "default"},
         "tts": {"sample_rate_hz": 24000},
         "renderer": {"resolution": [1280, 720], "fps": 24},
         "runtime": {"max_hours": 0.5, "parallelism": 1},

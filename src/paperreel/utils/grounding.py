@@ -110,13 +110,23 @@ def validate_scene(scene: ScriptScene, *,
     issues: list[GroundingIssue] = []
     kind = (scene.scene_kind or "").lower()
 
-    # 1) Every non-cover sketchbook scene must trace back to a source page.
+    # 1) Every non-cover sketchbook scene must trace back to a source page,
+    #    and cited source pages must exist in the ingested PDF.
     if kind and kind not in ("cover", "recap_card") and not scene.source_pages:
         issues.append(GroundingIssue(
             scene_id=scene.scene_id,
             code="no_source_pages",
             message=f"scene {scene.scene_id!r} has no source_pages",
         ))
+    if kind not in ("cover", "recap_card"):
+        for page in scene.source_pages or []:
+            if page not in page_text:
+                issues.append(GroundingIssue(
+                    scene_id=scene.scene_id,
+                    code="bad_source_page",
+                    message=f"scene cites source page {page} which is not in the ingested PDF",
+                    page=page,
+                ))
 
     # 2) Factual scene_kinds must carry at least one evidence span.
     needs_evidence = kind in _KINDS_REQUIRING_EVIDENCE
