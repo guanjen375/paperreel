@@ -23,6 +23,10 @@ htmlcov/
 runs/
 examples/tiny_sample/tiny.pdf
 dev_samples
+# Local user voice samples / tests
+dev_samples/voices/
+outputs/voice_tests/
+*.speaker.wav
 
 # OS junk
 .DS_Store

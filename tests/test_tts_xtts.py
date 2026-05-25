@@ -38,5 +38,7 @@ def test_audio_manifest_schema_tracks_xtts_chunking() -> None:
         status=SceneStatus.pending,
     )
     inputs = _audio_inputs(scene, {"provider": "xtts", "sample_rate_hz": 24000})
-    assert inputs["schema"] == "audio_artifact_v3"
+    assert inputs["schema"] == "audio_artifact_v4"
     assert inputs["text_chunking"] == "xtts_zh_safe_80"
+    assert inputs["normalizer"] == "zh_tw_tts_v1"
+    assert inputs["tts_text_sha256"]

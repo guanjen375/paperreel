@@ -22,9 +22,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from .audio.voice_sample import (PreparedVoiceSample, VoiceSampleError,
+                                 prepare_voice_sample)
+from .audio.zh_tw_normalize import normalize_zh_tw_for_tts
 from .config import load_config
 from .io_utils import atomic_write_json, ensure_dir
 from .models import ProjectMeta
+from .providers.tts_base import make_tts_provider
 from .stages import (build_outline, build_scene_graph, build_subtitles,
                      concat_final, ingest_pdf, match_pdf_visuals,
                      quality_check, render_segments, render_visuals,
@@ -124,6 +128,50 @@ def _check_budget(start_ts: float, max_hours: float) -> None:
 def _abort(msg: str) -> None:
     console.print(f"[red]✗ {msg}[/red]")
     raise typer.Exit(code=1)
+
+
+def _voice_source_info_line(
+    cfg: dict,
+    prepared: PreparedVoiceSample | None,
+) -> str:
+    if prepared is not None:
+        return f"[INFO] 使用 voice_sample: {prepared.processed_path}"
+    tts_cfg = cfg.get("tts", {})
+    if tts_cfg.get("speaker_wav"):
+        return f"[INFO] 使用進階 speaker_wav: {tts_cfg['speaker_wav']}"
+    speaker = tts_cfg.get("speaker")
+    suffix = f": {speaker}" if speaker else ""
+    return f"[INFO] 未提供 voice_sample，使用 XTTS 預設聲音{suffix}"
+
+
+def _apply_voice_sample(
+    cfg: dict,
+    project_paths: dict[str, Path],
+    voice_sample: str | None = None,
+) -> PreparedVoiceSample | None:
+    tts_cfg = cfg.setdefault("tts", {})
+    if voice_sample:
+        tts_cfg["voice_sample"] = voice_sample
+    sample = tts_cfg.get("voice_sample")
+    if not sample:
+        return None
+    try:
+        prepared = prepare_voice_sample(sample, project_paths, cfg)
+    except VoiceSampleError as e:
+        _abort(str(e))
+    tts_cfg["speaker_wav"] = prepared.processed_path
+    tts_cfg["voice_sample_prepared"] = {
+        "processed_path": prepared.processed_path,
+        "sha256": prepared.sha256,
+        "duration_sec": prepared.duration_sec,
+        "sample_rate_hz": prepared.sample_rate_hz,
+        "channels": prepared.channels,
+        "manifest_path": prepared.manifest_path,
+        "warnings": prepared.warnings,
+    }
+    for warning in prepared.warnings:
+        console.print(f"[yellow]! voice sample: {warning}[/]")
+    return prepared
 
 
 def _fmt_elapsed(s: float) -> str:
@@ -280,6 +328,9 @@ def run_pipeline(
         "auto", "--target-minutes",
         help="Approximate explainer length in minutes, e.g. 2, 5, or 10. "
              "Use auto to estimate from the PDF."),
+    voice_sample: Optional[str] = typer.Option(
+        None, "--voice-sample",
+        help="Optional local 6-10s voice reference for XTTS speaker_wav."),
     max_hours: float = typer.Option(
         10.0, "--max-hours",
         help="Wall-time budget; pipeline halts when exceeded (next run resumes)."),
@@ -307,7 +358,7 @@ def run_pipeline(
         style=style, depth=depth,
         target_minutes=target_minutes, max_hours=max_hours,
         force_stage=force_stage, skip_render=skip_render,
-        quiet_ollama=quiet_ollama,
+        quiet_ollama=quiet_ollama, voice_sample=voice_sample,
     )
 
 
@@ -315,6 +366,7 @@ def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
                       target_minutes: str, max_hours: float,
                       force_stage: Optional[str], skip_render: bool,
                       quiet_ollama: bool = False,
+                      voice_sample: Optional[str] = None,
                       style: Optional[str] = None,
                       depth: Optional[str] = None) -> None:
     if not Path(pdf).exists():
@@ -323,6 +375,7 @@ def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
         project, source_pdf=str(Path(pdf).resolve()), overlay=config,
         style=style, depth=depth,
     )
+    prepared_voice = _apply_voice_sample(cfg, p, voice_sample)
     forced = {s.strip() for s in (force_stage or "").split(",") if s.strip()}
     start = time.time()
     pdf_name = Path(meta.source_pdf or pdf).name
@@ -345,6 +398,7 @@ def _run_full_pipeline(*, pdf: str, project: str, config: Optional[str],
     console.print(f"[bold]Target[/]   {target_minutes} min")
     if meta.config_overlay:
         console.print(f"[bold]Config[/]   {meta.config_overlay}")
+    console.print(_voice_source_info_line(cfg, prepared_voice), markup=False)
     console.print(
         f"[bold]Pipeline[/] {total} stages "
         f"({'render to mp4' if will_render else 'no render — stops after subtitles'})"
@@ -601,9 +655,14 @@ def audio(
     project: str = typer.Option(..., "--project", "-p"),
     config: Optional[str] = typer.Option(None, "--config", "-c"),
     resume: bool = typer.Option(True, "--resume/--no-resume"),
+    voice_sample: Optional[str] = typer.Option(
+        None, "--voice-sample",
+        help="Optional local 6-10s voice reference for XTTS speaker_wav."),
 ) -> None:
     """Synthesize TTS for each scene."""
     p, cfg, db, _ = _ensure_project(project, overlay=config)
+    prepared_voice = _apply_voice_sample(cfg, p, voice_sample)
+    console.print(_voice_source_info_line(cfg, prepared_voice), markup=False)
     g = synthesize_audio.run(project_root=p["root"], db=db, config=cfg, resume=resume,
                              max_retries=int(cfg.get("runtime", {}).get("scene_retry_max", 2)))
     done = sum(1 for s in g.scenes if s.audio_path)
@@ -728,12 +787,58 @@ def review(
     )
 
 
+@app.command(name="voice-test")
+def voice_test(
+    voice_sample: str = typer.Option(
+        ..., "--voice-sample",
+        help="Local 6-10s voice reference WAV/MP3/M4A."),
+    text: Optional[str] = typer.Option(
+        None, "--text",
+        help="Traditional Chinese test sentence to synthesize."),
+    out: str = typer.Option(
+        "outputs/voice_tests/my_voice_test.wav", "--out",
+        help="Output WAV path."),
+    config: Optional[str] = typer.Option(
+        None, "--config", "-c",
+        help="Advanced: config overlay name or YAML path.",
+        hidden=True),
+) -> None:
+    """Preprocess a voice sample and synthesize a short zh-TW TTS test."""
+    cfg = load_config(config)
+    out_path = Path(out).expanduser().resolve()
+    project_paths = {
+        "root": out_path.parent,
+        "assets": out_path.parent / "assets",
+        "outputs": out_path.parent,
+    }
+    prepared = _apply_voice_sample(cfg, project_paths, voice_sample)
+    if prepared is None:
+        _abort("--voice-sample is required for voice-test")
+
+    tts_cfg = cfg.get("tts", {})
+    sentence = text or "這是一段繁體中文旁白測試。請確認語氣自然、咬字清楚，適合用在教學影片。"
+    if tts_cfg.get("normalize_zh_tw", True):
+        sentence = normalize_zh_tw_for_tts(sentence)
+    provider = make_tts_provider(tts_cfg)
+    try:
+        duration = provider.synthesize(
+            sentence, out_path,
+            voice=tts_cfg.get("speaker") or tts_cfg.get("voice"),
+            sample_rate_hz=int(tts_cfg.get("sample_rate_hz", 48000)),
+            speaking_rate=float(tts_cfg.get("speaking_rate", 1.0)),
+        )
+    except Exception as e:
+        _abort(f"voice-test TTS failed: {e}")
+    console.print(f"[green]✓[/green] voice sample prepared: {prepared.processed_path}")
+    console.print(f"[green]✓[/green] voice test written: {out_path} ({duration:.1f}s)")
+
+
 # Subcommand names that the bare-PDF wrapper must NOT rewrite. Keep in
 # sync with @app.command(...) registrations above.
 _KNOWN_SUBCOMMANDS = frozenset({
     "run", "init", "ingest", "plan", "script", "scenes", "match-visuals",
     "audio", "visuals", "subtitles", "render", "status", "retry-failed",
-    "review",
+    "review", "voice-test",
 })
 
 # Hold a reference to the real Typer instance so the wrapper below can

@@ -106,10 +106,13 @@ llm:
 tts:
   provider: "xtts"
   # Pick ONE voice source. Built-in XTTS speakers can sound accented in
-  # Mandarin; use speaker_wav with a clean local zh-TW reference clip
-  # when natural native-sounding Chinese narration matters.
-  #   speaker_wav: absolute path to a 6–10s 16k mono WAV
-  #   speaker:     name of an XTTS built-in speaker
+  # Mandarin; --voice-sample / voice_sample is the normal way to provide
+  # a short local zh-TW reference clip. The pipeline validates and
+  # preprocesses it into speaker_wav automatically.
+  #   voice_sample: user-provided 6-10s local clip, WAV preferred
+  #   speaker_wav:  advanced: already-processed XTTS reference WAV
+  #   speaker:      name of an XTTS built-in speaker
+  voice_sample: null
   speaker_wav: null
   speaker: "Ana Florence"
   # XTTS uses zh-cn as the Chinese language tag — feeding it 繁體 text is fine.
@@ -120,6 +123,7 @@ tts:
   # Slightly slower than XTTS default; dense explainer narration otherwise
   # sounds rushed in zh-TW.
   speaking_rate: 0.92
+  normalize_zh_tw: true
 
 # Figure-to-scene matching. When a scene's source pages contain extracted
 # PDF images, the `match_visuals` stage picks the best fit and upgrades

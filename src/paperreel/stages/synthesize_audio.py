@@ -13,6 +13,7 @@ import wave
 from pathlib import Path
 from typing import Any
 
+from ..audio.zh_tw_normalize import normalize_zh_tw_for_tts
 from ..hashing import hash_inputs, sha256_text
 from ..io_utils import atomic_write_json, read_json
 from ..manifest import manifest_matches, sha256_of, write_manifest
@@ -43,10 +44,19 @@ def _stage_config_hash(tts_cfg: dict) -> str:
         tts_cfg.get("language"),
         tts_cfg.get("sample_rate_hz"),
         tts_cfg.get("speaking_rate"),
+        tts_cfg.get("normalize_zh_tw", True),
     )
 
 
-def _audio_inputs(scene: Scene, tts_cfg: dict) -> dict[str, Any]:
+def _tts_text_for_scene(scene: Scene, tts_cfg: dict) -> str:
+    text = scene.narration_text_zh_tw
+    if tts_cfg.get("normalize_zh_tw", True):
+        return normalize_zh_tw_for_tts(text)
+    return text
+
+
+def _audio_inputs(scene: Scene, tts_cfg: dict, *,
+                  tts_text: str | None = None) -> dict[str, Any]:
     """Return the inputs dict that fully fingerprints one audio artifact.
 
     Anything that can change the produced waveform belongs here. The
@@ -54,11 +64,16 @@ def _audio_inputs(scene: Scene, tts_cfg: dict) -> dict[str, Any]:
     the reference clip without renaming it — the previous resume logic
     couldn't catch that.
     """
+    rendered_text = tts_text if tts_text is not None else _tts_text_for_scene(scene, tts_cfg)
     return {
-        "schema": "audio_artifact_v3",
+        "schema": "audio_artifact_v4",
         "text_chunking": "xtts_zh_safe_80",
         "narration_sha256": sha256_text(scene.narration_text_zh_tw),
         "narration_len": len(scene.narration_text_zh_tw),
+        "tts_text_sha256": sha256_text(rendered_text),
+        "tts_text_len": len(rendered_text),
+        "normalize_zh_tw": bool(tts_cfg.get("normalize_zh_tw", True)),
+        "normalizer": "zh_tw_tts_v1",
         "language": tts_cfg.get("language"),
         "speaker": tts_cfg.get("speaker"),
         "speaker_wav": tts_cfg.get("speaker_wav"),
@@ -69,8 +84,9 @@ def _audio_inputs(scene: Scene, tts_cfg: dict) -> dict[str, Any]:
     }
 
 
-def _audio_input_hash(scene: Scene, tts_cfg: dict) -> str:
-    return hash_inputs("audio_artifact_v3", _audio_inputs(scene, tts_cfg))
+def _audio_input_hash(scene: Scene, tts_cfg: dict, *,
+                      tts_text: str | None = None) -> str:
+    return hash_inputs("audio_artifact_v4", _audio_inputs(scene, tts_cfg, tts_text=tts_text))
 
 
 def _wav_duration_seconds(path: Path) -> float | None:
@@ -98,7 +114,8 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
 
     for sc in graph.scenes:
         out_path = p["audio_dir"] / f"{sc.scene_id}.wav"
-        expected_hash = _audio_input_hash(sc, tts_cfg)
+        tts_text = _tts_text_for_scene(sc, tts_cfg)
+        expected_hash = _audio_input_hash(sc, tts_cfg, tts_text=tts_text)
 
         # Resume: only skip if the existing file's manifest still matches
         # what we'd produce with the current config + narration. A bare
@@ -121,7 +138,7 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
         while attempt <= max_retries:
             try:
                 actual = provider.synthesize(
-                    sc.narration_text_zh_tw, out_path,
+                    tts_text, out_path,
                     voice=tts_cfg.get("speaker") or tts_cfg.get("voice"),
                     sample_rate_hz=int(tts_cfg.get("sample_rate_hz", 48000)),
                     speaking_rate=float(tts_cfg.get("speaking_rate", 1.0)),
@@ -151,7 +168,7 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
             stage="audio",
             scene_id=sc.scene_id,
             input_hash=expected_hash,
-            inputs=_audio_inputs(sc, tts_cfg),
+            inputs=_audio_inputs(sc, tts_cfg, tts_text=tts_text),
             extra={"actual_duration_sec": actual},
         )
 

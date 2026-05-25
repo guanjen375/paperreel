@@ -79,9 +79,41 @@ ollama pull qwen2.5:7b-instruct
 export COQUI_TOS_AGREED=1
 ```
 
-Ollama 主要用於 outline 摘要；explainer 腳本與視覺卡片仍以 PDF 抽取 facts/evidence 為核心。若 Ollama 暫時不可用，explainer plan 會退回 deterministic outline。XTTS 用於語音合成；`tts.device: auto` 會自動使用 CUDA 或 CPU。預設語速略低於 XTTS 原速，避免繁中導讀聽起來太趕；若想要更自然的中文口音，建議在 `tts.speaker_wav` 指向一段本機 6-10 秒乾淨的繁中參考聲音。
+Ollama 主要用於 outline 摘要；explainer 腳本與視覺卡片仍以 PDF 抽取 facts/evidence 為核心。若 Ollama 暫時不可用，explainer plan 會退回 deterministic outline。XTTS 用於語音合成；`tts.device: auto` 會自動使用 CUDA 或 CPU。預設語速略低於 XTTS 原速，避免繁中導讀聽起來太趕。
 
 高階硬體可以改用更大的本機模型、較大的 context、較快的 TTS/OCR，或自行開啟進階 review；這些都不是正常路徑必需。
+
+## 改善中文旁白聲音
+
+XTTS 內建 speaker 在中文旁白可能有外國口音。建議提供一段你本人或你有權使用的本機繁中參考聲音，paperreel 會自動檢查、轉 mono、重取樣、裁切前後靜音、正規化音量，並快取成 XTTS 的 `speaker_wav`：
+
+```bash
+paperreel input.pdf --project runs/demo --target-minutes 5 --voice-sample ./my_voice.wav
+```
+
+建議聲音樣本：
+
+- 6-10 秒；4-15 秒可用但可能警告，少於 4 秒或超過 20 秒會失敗
+- 單人說話、安靜環境、沒有背景音樂
+- 沒有明顯混響或回音
+- 語速自然，不要太播報腔
+- WAV 最佳；16k、24k、48k 會自動轉成 mono 24k WAV
+- 請只使用你擁有或取得授權的聲音；不要擅自使用第三方產品、公眾人物或他人的聲音
+
+可先不跑完整 PDF，用短句測試聲音：
+
+```bash
+paperreel voice-test --voice-sample ./my_voice.wav
+```
+
+沒提供 `--voice-sample` 時，paperreel 會顯示 `[INFO] 未提供 voice_sample，使用 XTTS 預設聲音`，並使用 XTTS 內建 speaker 繼續產生影片。一般使用者不用改 config 或原始碼。進階 config 仍可使用：
+
+```yaml
+tts:
+  voice_sample: "./my_voice.wav"
+```
+
+`--voice-sample` 只控制聲音來源，不是影片內容控制參數；`--target-minutes` 仍是一般使用者唯一需要調整的內容長度控制值。NotebookLM 參考音影片只能當聽感與 pacing 參考，不應作為 bundled speaker sample。voice sample 是本機檔案，請不要提交到 git。
 
 ## 進階相容選項
 

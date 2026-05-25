@@ -6,9 +6,11 @@ Default behaviour:
 - Language is forced to `zh-cn` (XTTS uses the zh-cn tag; zh-tw audio is
   produced by feeding it 繁中 text and the same code).
 - Voice is selected by either:
-  1. `tts.speaker_wav`  → absolute path to a 6–10s reference WAV (best 質感)
-  2. `tts.speaker`      → one of XTTS's built-in speaker names
-  3. neither             → falls back to a sensible default built-in
+  1. `--voice-sample` / `tts.voice_sample` → validated local user clip,
+     preprocessed into `tts.speaker_wav` by the CLI
+  2. `tts.speaker_wav`  → advanced: absolute path to a processed reference WAV
+  3. `tts.speaker`      → one of XTTS's built-in speaker names
+  4. neither            → falls back to a sensible default built-in
 - Output is written at the model's native sample rate, then transcoded to
   the project's target sample rate with ffmpeg.
 
