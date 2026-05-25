@@ -12,8 +12,8 @@ scene list produced by the script writer. Priority rules:
 - Cover + recap_card always bookend the video.
 - When over budget, low-importance paragraph_card / section_intro
   scenes are dropped first.
-- When under budget, repeated high-importance scenes get
-  paragraph_card siblings (one per scene) to add depth.
+- When under budget, factual scenes get item-level grounded expansion
+  siblings (penalty rows, risk items, checklist actions) to add depth.
 
 Cheap, deterministic, easy to reason about.
 """
@@ -182,18 +182,61 @@ def _scene_score(scene: ScriptScene) -> float:
     return base
 
 
-def _can_expand(scene: ScriptScene) -> bool:
-    """True when a scene has grounded material worth expanding."""
+def _grounded_item_count(items: list[dict]) -> int:
+    seen: set[tuple[int, str, str, str]] = set()
+    for it in items:
+        if not isinstance(it, dict) or not isinstance(it.get("page"), int):
+            continue
+        key = (
+            it["page"],
+            str(it.get("text") or it.get("context") or it.get("label") or ""),
+            str(it.get("condition") or ""),
+            str(it.get("value") or ""),
+        )
+        seen.add(key)
+    return len(seen)
+
+
+def _expansion_capacity(scene: ScriptScene) -> int:
+    """How many distinct grounded expansion cards this scene can support."""
     kind = (scene.scene_kind or "paragraph_card").lower()
-    if kind in ("cover", "recap_card", "section_intro"):
-        return False
-    if scene.evidence_spans or scene.facts:
-        return True
     payload = scene.layout_payload or {}
-    for key in ("events", "rows", "items", "do", "dont"):
-        if payload.get(key):
-            return True
-    return False
+    if kind == "penalty_table":
+        return _grounded_item_count(list(payload.get("rows") or []))
+    if kind == "risk_warning":
+        return _grounded_item_count(list(payload.get("items") or []))
+    if kind == "checklist":
+        return _grounded_item_count(list(payload.get("items") or []))
+    if kind == "deadline_timeline":
+        return _grounded_item_count(list(payload.get("events") or []))
+    if kind == "do_dont":
+        return _grounded_item_count(
+            list(payload.get("do") or []) + list(payload.get("dont") or [])
+        )
+    if kind == "key_number":
+        return _grounded_item_count(list(payload.get("items") or []))
+    return 0
+
+
+def _can_expand(scene: ScriptScene) -> bool:
+    """True when a scene has distinct grounded items worth expanding."""
+    return _expansion_capacity(scene) > 0
+
+
+def _expansion_slots(scenes: list[ScriptScene]) -> list[ScriptScene]:
+    """Return scene ids in round-robin item order by importance.
+
+    Round-robin keeps a high-scoring timeline from consuming every
+    available expansion before a penalty table or risk card gets a turn.
+    """
+    ranked = [sc for sc in sorted(scenes, key=_scene_score, reverse=True) if _can_expand(sc)]
+    max_capacity = max((_expansion_capacity(sc) for sc in ranked), default=0)
+    slots: list[ScriptScene] = []
+    for item_index in range(max_capacity):
+        for sc in ranked:
+            if item_index < _expansion_capacity(sc):
+                slots.append(sc)
+    return slots
 
 
 def select_scenes(scenes: list[ScriptScene], target: DurationTarget
@@ -230,29 +273,20 @@ def select_scenes(scenes: list[ScriptScene], target: DurationTarget
     # Pad: when too short, request grounded expansion cards behind the
     # most important factual scenes. We don't invent content here — we
     # tell the caller "expand these scenes". The caller inserts distinct
-    # paragraph cards that reuse the original scene's facts/evidence.
+    # item-level cards that reuse the original scene's facts/evidence.
     pad_targets: list[str] = []
     if keep_seconds < target.min_seconds:
-        sorted_by_score = [
-            sc for sc in sorted(keep, key=_scene_score, reverse=True)
-            if _can_expand(sc)
-        ]
-        # Prevent pathological auto-padding on tiny PDFs. If a document
-        # cannot supply enough grounded scenes for the requested length,
-        # the report explains the residual shortfall.
-        max_expansions = max(len(sorted_by_score) * 4, 0)
-        expansion_count = 0
-        while (keep_seconds < target.min_seconds and sorted_by_score
-               and expansion_count < max_expansions):
-            sc = sorted_by_score[expansion_count % len(sorted_by_score)]
+        slots = _expansion_slots(keep)
+        for sc in slots:
+            if keep_seconds >= target.min_seconds:
+                break
             pad_targets.append(sc.scene_id)
             keep_seconds += _EXPANSION_SCENE_SECONDS
-            expansion_count += 1
             decisions.append(f"pad after {sc.scene_id}")
         if keep_seconds < target.min_seconds:
             decisions.append(
-                "under target: not enough grounded factual scenes to "
-                "expand without repeating content"
+                "under target: not enough distinct grounded facts/evidence "
+                "to expand without repeating content"
             )
 
     report = {
@@ -264,6 +298,7 @@ def select_scenes(scenes: list[ScriptScene], target: DurationTarget
         "scene_count": len(keep) + len(pad_targets),
         "base_scene_count": len(keep),
         "expansion_scene_count": len(pad_targets),
+        "expansion_capacity": len(_expansion_slots(keep)),
         "rationale": target.rationale,
         "decisions": decisions,
         "pad_after_scene_ids": pad_targets,

@@ -147,7 +147,13 @@ def extract_from_pages(pages: dict[int, str]) -> dict[int, list[tuple[Fact, Evid
 
 _TIMELINE_KINDS = {"deadline", "deadline_cjk", "absolute_date"}
 _PENALTY_KEYWORDS = ("違約", "解約", "賠償", "退款", "退還", "取消", "取消費", "罰款", "費用", "手續費", "變更", "更改", "更動", "不予退款", "無退費", "penalty", "refund")
-_RISK_KEYWORDS = ("風險", "警告", "注意", "禁止", "不得", "拒絕登船", "拒絕入境", "概不負責", "恕不退還", "不予退款", "無退費", "不可抗力", "無退費義務", "不負任何退款", "自付費用", "無法更動", "更動", "保險", "疾病", "適航證明", "warning", "caution")
+_RISK_KEYWORDS = (
+    "風險", "警告", "注意", "禁止", "不得", "拒絕登船", "拒絕入境",
+    "概不負責", "恕不退還", "不予退款", "無退費", "退款", "退費義務",
+    "不可抗力", "政府命令", "停泊港", "不負任何退款", "額外費",
+    "交通安排", "住宿", "自付費用", "無法更動", "更動", "保險",
+    "疾病", "醫療", "適航證明", "醫師", "健康", "warning", "caution",
+)
 _OBLIGATION_KEYWORDS = ("應", "需", "須", "必須", "務必", "請", "提供", "繳交", "繳付", "繳納", "攜帶", "投保", "檢查", "遵守", "簽名", "護照", "簽證", "資料", "shall", "must")
 
 
@@ -234,7 +240,7 @@ def group_for_scene_kind(scene_kind: str,
             for sent in _split_sentences(text):
                 if any(kw in sent for kw in _RISK_KEYWORDS):
                     risks.append({
-                        "text": sent.strip()[:80],
+                        "text": sent.strip()[:140],
                         "page": page,
                         "_score": _risk_score(sent),
                     })
@@ -275,15 +281,20 @@ def group_for_scene_kind(scene_kind: str,
 
 def _risk_score(sentence: str) -> int:
     priority_groups = (
-        ("拒絕登船", "拒絕入境", "不予退款", "恕不退還", "無退費義務"),
-        ("保險", "疾病", "適航證明", "醫師", "自付費用"),
-        ("不可抗力", "行程", "變更", "無法更動", "概不負責"),
+        ("拒絕登船", "拒絕入境", "不予退款", "恕不退還",
+         "額外費", "交通安排", "住宿"),
+        ("不可抗力", "政府命令", "停泊港", "必要的變更",
+         "不負任何退款", "無退費義務", "退費義務"),
+        ("保險", "疾病", "醫療", "適航證明", "醫師", "健康", "自付費用"),
+        ("無法更動", "更動", "概不負責"),
         ("個人資料", "蒐集", "處理", "傳輸", "利用"),
     )
     score = 0
-    for weight, group in zip((40, 30, 20, 10), priority_groups):
+    for weight, group in zip((100, 90, 70, 40, 10), priority_groups):
         if any(term in sentence for term in group):
             score += weight
+    if any(term in sentence for term in ("個人資料", "蒐集", "處理", "傳輸", "利用")):
+        score -= 70
     return score
 
 
@@ -301,13 +312,13 @@ _SENT_SPLIT = re.compile(r"(?<=[。．.!?！？；;])\s*")
 
 
 def _split_sentences(text: str) -> list[str]:
-    out: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        out.extend(s.strip() for s in _SENT_SPLIT.split(line) if s.strip())
-    return out
+    # PDF extraction often inserts hard line breaks inside a single
+    # clause. Join lines before sentence splitting so risk clauses like
+    # "不可抗力 ... 退款" stay available as one grounded item.
+    normalised = re.sub(r"\s*\n\s*", "", text.strip())
+    if not normalised:
+        return []
+    return [s.strip() for s in _SENT_SPLIT.split(normalised) if s.strip()]
 
 
 _COND_PATTERNS = (

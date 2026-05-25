@@ -188,3 +188,27 @@ def test_unknown_kind_falls_back_to_paragraph(tmp_path: Path) -> None:
         out,
     )
     _assert_card(out, (1280, 720))
+
+
+def test_source_crop_without_crop_path_uses_quote_card(tmp_path: Path) -> None:
+    out = tmp_path / "card.png"
+    renderer = _renderer()
+
+    def fail_placeholder(*args, **kwargs):
+        raise AssertionError("missing source crop should not render placeholder")
+
+    renderer._placeholder = fail_placeholder  # type: ignore[method-assign]
+    renderer.render(
+        _scene(
+            "source_crop",
+            source_pages=[5],
+            evidence_spans=[
+                EvidenceSpan(page=5, quote="出發前30天內恕無法更動任何名字及艙房分配。"),
+            ],
+            layout_payload={
+                "caption": "沒有裁切圖時，仍應顯示可讀的來源摘錄。",
+            },
+        ),
+        out,
+    )
+    _assert_card(out, (1280, 720))

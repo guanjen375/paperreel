@@ -16,6 +16,7 @@ Validation happens in ``utils/grounding`` once the list is built.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -406,80 +407,275 @@ def _insert_expansion_scenes(scenes: list[ScriptScene],
     for sid in pad_ids:
         counts[sid] = counts.get(sid, 0) + 1
     emitted: dict[str, int] = {}
+    inserted = 0
     out: list[ScriptScene] = []
     for sc in scenes:
         out.append(sc)
         n = counts.get(sc.scene_id, 0)
         for _ in range(n):
             emitted[sc.scene_id] = emitted.get(sc.scene_id, 0) + 1
-            out.append(_build_expansion_scene(sc, emitted[sc.scene_id]))
+            expansion = _build_expansion_scene(sc, emitted[sc.scene_id])
+            if expansion is None:
+                continue
+            out.append(expansion)
+            inserted += 1
+    if inserted < len(pad_ids):
+        plan_report["under_target_reason"] = (
+            "not enough distinct grounded facts/evidence to expand without "
+            "repeating content"
+        )
+        plan_report["dropped_weak_expansion_count"] = len(pad_ids) - inserted
+    plan_report["inserted_expansion_scene_count"] = inserted
     return out
 
 
-def _build_expansion_scene(base: ScriptScene, seq: int) -> ScriptScene:
-    span = base.evidence_spans[(seq - 1) % len(base.evidence_spans)] if base.evidence_spans else None
-    fact = base.facts[(seq - 1) % len(base.facts)] if base.facts else None
+def _build_expansion_scene(base: ScriptScene, seq: int) -> ScriptScene | None:
+    kind = (base.scene_kind or "").lower()
+    if kind == "penalty_table":
+        rows = list((base.layout_payload or {}).get("rows") or [])
+        item = _nth_grounded_item(rows, seq)
+        if item is None:
+            return None
+        return _item_expansion_scene(
+            base, item,
+            scene_kind="penalty_table",
+            title_prefix="罰則細節",
+            label="罰則",
+            value=str(item.get("value") or ""),
+            body=_penalty_item_body(item),
+            layout_payload={"rows": [item]},
+            narration=_penalty_item_narration(item),
+            duration=22.0,
+        )
+    if kind == "risk_warning":
+        items = list((base.layout_payload or {}).get("items") or [])
+        item = _nth_grounded_item(items, seq)
+        if item is None:
+            return None
+        return _item_expansion_scene(
+            base, item,
+            scene_kind="risk_warning",
+            title_prefix="風險細節",
+            label="風險",
+            value=_short_item_value(item),
+            body=str(item.get("text") or ""),
+            layout_payload={"items": [item]},
+            narration=_risk_item_narration(item),
+            duration=24.0,
+        )
+    if kind == "checklist":
+        items = list((base.layout_payload or {}).get("items") or [])
+        item = _nth_grounded_item(items, seq)
+        if item is None:
+            return None
+        group = _checklist_group(item)
+        return _item_expansion_scene(
+            base, item,
+            scene_kind="checklist",
+            title_prefix=f"應辦事項：{group}",
+            label="應辦事項",
+            value=_short_item_value(item),
+            body=str(item.get("text") or ""),
+            layout_payload={"items": [item], "group": group},
+            narration=_checklist_item_narration(item, group),
+            duration=22.0,
+        )
+    if kind == "deadline_timeline":
+        events = list((base.layout_payload or {}).get("events") or [])
+        item = _nth_grounded_item(events, seq)
+        if item is None:
+            return None
+        return _item_expansion_scene(
+            base, item,
+            scene_kind="deadline_timeline",
+            title_prefix="時程細節",
+            label="期限",
+            value=str(item.get("value") or ""),
+            body=_deadline_item_body(item),
+            layout_payload={"events": [item]},
+            narration=_deadline_item_narration(item),
+            duration=22.0,
+        )
+    if kind == "key_number":
+        items = list((base.layout_payload or {}).get("items") or [])
+        item = _nth_grounded_item(items, seq)
+        if item is None:
+            return None
+        return _item_expansion_scene(
+            base, item,
+            scene_kind="key_number",
+            title_prefix="關鍵數字",
+            label=str(item.get("label") or "關鍵數字"),
+            value=str(item.get("value") or ""),
+            body=str(item.get("context") or item.get("value") or ""),
+            layout_payload={"items": [item]},
+            narration=_keynumber_narration([item]),
+            duration=18.0,
+        )
+    if kind == "do_dont":
+        do_items = [{**it, "_column": "do"} for it in (base.layout_payload or {}).get("do") or []]
+        dont_items = [{**it, "_column": "dont"} for it in (base.layout_payload or {}).get("dont") or []]
+        item = _nth_grounded_item(do_items + dont_items, seq)
+        if item is None:
+            return None
+        clean = {k: v for k, v in item.items() if k != "_column"}
+        payload = {"do": [clean], "dont": []} if item.get("_column") == "do" else {"do": [], "dont": [clean]}
+        label = "應做" if item.get("_column") == "do" else "不要做"
+        return _item_expansion_scene(
+            base, clean,
+            scene_kind="do_dont",
+            title_prefix=label,
+            label=label,
+            value=_short_item_value(clean),
+            body=str(clean.get("text") or ""),
+            layout_payload=payload,
+            narration=f"這一點請特別記住：{str(clean.get('text') or '')[:80]}。",
+            duration=20.0,
+        )
+    return None
 
-    facts: list[Fact] = []
-    evidence: list[EvidenceSpan] = []
-    focus = base.title.split("·")[-1].strip() if "·" in base.title else base.title
-    if span is not None:
-        evidence.append(span)
-    if fact is not None:
+
+def _nth_grounded_item(items: list[dict], seq: int) -> dict | None:
+    grounded: list[dict] = []
+    seen: set[tuple[int, str, str, str]] = set()
+    for it in items:
+        if not isinstance(it, dict) or not isinstance(it.get("page"), int):
+            continue
+        key = (
+            it["page"],
+            _item_quote(it),
+            str(it.get("condition") or ""),
+            str(it.get("value") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        grounded.append(it)
+    if 1 <= seq <= len(grounded):
+        return dict(grounded[seq - 1])
+    return None
+
+
+def _item_expansion_scene(base: ScriptScene, item: dict, *, scene_kind: str,
+                          title_prefix: str, label: str, value: str,
+                          body: str, layout_payload: dict,
+                          narration: str, duration: float) -> ScriptScene | None:
+    page = item.get("page")
+    quote = _item_quote(item)
+    if not isinstance(page, int) or not quote:
+        return None
+    evidence = [EvidenceSpan(
+        page=page,
+        quote=quote[:160],
+        label=label,
+        value=value or None,
+        importance="high" if (base.importance or "") == "high" else "medium",
+    )]
+    facts = []
+    if value:
         facts.append(Fact(
-            label=fact.label, value=fact.value, importance=fact.importance,
-            evidence_index=0 if evidence else None,
+            label=label,
+            value=value[:80],
+            importance=base.importance or "medium",
+            evidence_index=0,
         ))
-        focus = f"{fact.label}：{fact.value}"
-
-    quote = (span.quote if span is not None else "").strip()
-    body_parts = [focus]
-    if quote:
-        body_parts.append(f"原文依據：{quote[:90]}")
-    elif base.layout_payload:
-        body_parts.append(_payload_focus(base.layout_payload, seq))
-    body = "\n".join(p for p in body_parts if p)
-    narration = (
-        f"補充說明「{focus}」。"
-        + (f"這張卡只引用同一段來源：{quote[:80]}。" if quote else "這張卡延伸前一張的同一組來源資訊。")
-        + "請把它和前一張卡一起看，避免只記住單一數字而漏掉適用條件。"
-    )
+    focus = _item_focus(item, value=value, fallback=title_prefix)
+    payload = dict(layout_payload)
+    payload.update({
+        "expansion_of": base.scene_id,
+        "source_kind": base.scene_kind,
+        "body": body[:360],
+    })
+    suffix = hashlib.sha1(
+        f"{base.scene_id}|{page}|{focus}|{quote}".encode("utf-8")
+    ).hexdigest()[:8]
     return ScriptScene(
-        scene_id=f"{base.scene_id}_ex_{seq:02d}",
+        scene_id=f"{base.scene_id}_ex_{suffix}",
         chapter_id=base.chapter_id,
-        title=(base.title + " · 補充")[:40],
-        source_pages=list(base.source_pages),
-        source_refs=list(base.source_refs),
+        title=f"{title_prefix} · {focus}"[:40],
+        source_pages=[page],
+        source_refs=[f"p.{page}"],
         narration_text_zh_tw=narration[:600],
         on_screen_text=focus[:30],
-        visual_hint="grounded expansion",
+        visual_hint=f"grounded {scene_kind} expansion",
         visual_type=VisualType.sketchbook_card,
-        scene_kind="paragraph_card",
+        scene_kind=scene_kind,
         facts=facts,
         evidence_spans=evidence,
-        layout_payload={
-            "body": body[:360],
-            "expansion_of": base.scene_id,
-            "source_kind": base.scene_kind,
-        },
+        layout_payload=payload,
         importance=base.importance or "medium",
-        estimated_duration_sec=22.0,
+        estimated_duration_sec=duration,
     )
 
 
-def _payload_focus(payload: dict, seq: int) -> str:
-    for key in ("events", "rows", "items", "do", "dont"):
-        values = list(payload.get(key) or [])
-        if not values:
-            continue
-        item = values[(seq - 1) % len(values)]
-        if isinstance(item, dict):
-            text = (item.get("text") or item.get("condition") or
-                    item.get("label") or item.get("context") or "")
-            value = item.get("value") or ""
-            return f"{text} {value}".strip()[:120]
-        return str(item)[:120]
-    return "同一來源中的補充脈絡"
+def _item_quote(item: dict) -> str:
+    return str(
+        item.get("text") or item.get("context") or item.get("condition") or
+        item.get("label") or item.get("value") or ""
+    ).strip()
+
+
+def _item_focus(item: dict, *, value: str, fallback: str) -> str:
+    condition = str(item.get("condition") or "").strip()
+    text = str(item.get("text") or item.get("label") or "").strip()
+    if condition and value:
+        return f"{condition} → {value}"[:36]
+    if value:
+        return value[:36]
+    return (condition or text or fallback)[:36]
+
+
+def _short_item_value(item: dict) -> str:
+    raw = str(item.get("value") or item.get("text") or item.get("condition") or "").strip()
+    return raw[:48]
+
+
+def _penalty_item_body(item: dict) -> str:
+    condition = str(item.get("condition") or "")
+    value = str(item.get("value") or "")
+    return f"{condition}\n費用 / 比例：{value}".strip()
+
+
+def _penalty_item_narration(item: dict) -> str:
+    condition = str(item.get("condition") or "這個情境")
+    value = str(item.get("value") or "文件列出的費用")
+    return f"罰則細節：{condition}，文件列出的費用或比例是 {value}。請確認自己的取消或變更時間是否落在這一列。"
+
+
+def _risk_item_narration(item: dict) -> str:
+    text = str(item.get("text") or "這項風險")
+    return f"這是一項需要單獨記住的風險：{text[:100]}。處理前請回到來源頁確認完整條件。"
+
+
+def _checklist_group(item: dict) -> str:
+    text = str(item.get("text") or "")
+    groups = (
+        ("付款", ("付款", "繳付", "繳納", "訂金", "尾款", "全額費")),
+        ("名單 / 艙房", ("名單", "分房", "艙房", "更改", "更動", "改名")),
+        ("護照 / 簽證", ("護照", "簽證", "登船", "入境")),
+        ("保險 / 健康", ("保險", "疾病", "醫師", "適航", "投保", "服藥")),
+    )
+    for label, needles in groups:
+        if any(n in text for n in needles):
+            return label
+    return "確認事項"
+
+
+def _checklist_item_narration(item: dict, group: str) -> str:
+    text = str(item.get("text") or "這項應辦事項")
+    return f"應辦事項，{group}：{text[:100]}。這張卡只列這一件事，方便你逐項核對。"
+
+
+def _deadline_item_body(item: dict) -> str:
+    value = str(item.get("value") or "")
+    label = str(item.get("label") or "")
+    return f"{value}\n{label}".strip()
+
+
+def _deadline_item_narration(item: dict) -> str:
+    value = str(item.get("value") or "這個期限")
+    label = str(item.get("label") or "文件中的期限條件")
+    return f"時程細節：{value}。它對應的來源脈絡是：{label[:100]}。請避免只記日期而忽略條件。"
 
 
 def _duration_for_kind(kind: str) -> float:

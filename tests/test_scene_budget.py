@@ -87,3 +87,17 @@ def test_brief_standard_deep_change_scene_budget() -> None:
         scenes, scene_budget.resolve_target(depth="deep", target_minutes=None),
     )[1]["scene_count"]
     assert brief < standard < deep
+
+
+def test_under_target_without_grounded_items_does_not_pad() -> None:
+    scenes = [
+        _scene("cover", duration=12.0, importance="high"),
+        _scene("paragraph_card", duration=22.0, importance="low"),
+        _scene("recap_card", duration=18.0, importance="medium"),
+    ]
+    target = scene_budget.resolve_target(depth="standard", target_minutes=5)
+    kept, report = scene_budget.select_scenes(scenes, target)
+    assert kept == scenes
+    assert report["expansion_scene_count"] == 0
+    assert report["expansion_capacity"] == 0
+    assert any("not enough distinct grounded" in d for d in report["decisions"])

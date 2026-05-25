@@ -112,3 +112,14 @@ pytest -q
 ```
 
 測試不需要 GPU、網路、雲端 API、SDXL 或 VLM；provider 會被測試替身取代。
+
+可選的本機 regression / reference 檔案放在 `dev_samples/reference/`：
+
+| 路徑 | 用途 |
+|---|---|
+| `dev_samples/reference/sample.pdf` | 合約/表單類 PDF smoke regression |
+| `dev_samples/reference/notebooklm_short.mp4` | 視覺節奏與資訊密度參考，不複製品牌或 UI |
+| `dev_samples/reference/notebooklm_long.mp4` | 較長篇 pacing 參考，不是正常使用依賴 |
+| `dev_samples/reference/frames/` | MP4 無法讀取時的備用影格參考 |
+
+這些檔案不是一般使用者執行 `paperreel input.pdf --project runs/demo --target-minutes 5` 的必要條件。測試會優先使用 `dev_samples/reference/sample.pdf`；若本機仍有舊的 `dev_examples/reference/sample.pdf`，只作為 legacy fallback。

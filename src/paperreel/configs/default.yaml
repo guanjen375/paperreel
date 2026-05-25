@@ -20,8 +20,9 @@ doc_explainer:
   # the actual content. Off by default for this style; only flip on
   # if you have a custom prompt set you trust to stay neutral.
   allow_generated_images: false
-  # Skip auto-matching extracted PDF figures to scenes — sketchbook
-  # picks figures via explicit source_crop scenes only.
+  # Skip auto-matching extracted PDF figures to scenes. source_crop
+  # scenes are optional; if no crop image exists, the renderer shows a
+  # source_quote_card with the evidence quote and page number instead.
   auto_match_pdf_figures: false
   # Heuristic document classifier; optional LLM refinement is gated
   # behind `use_llm_refinement` and stays off by default for speed.
@@ -45,8 +46,9 @@ doc_explainer:
     max_timeline_events: 6
     max_table_rows: 6
     max_checklist_items: 6
-  # Source PDF crop / highlight settings (Phase 5). PyMuPDF crop is
-  # cached by (pdf_sha, page, bbox, settings) under assets/source_crops.
+  # Optional source PDF crop / highlight settings. Normal explainer
+  # generation does not depend on crops; quote cards are used when no
+  # readable crop_path is available.
   crops:
     enabled: true
     target_dpi: 220

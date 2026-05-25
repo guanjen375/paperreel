@@ -7,8 +7,8 @@ Traditional Chinese text with a Noto CJK fallback chain.
 
 Card kinds:
   cover, section_intro, deadline_timeline, penalty_table, checklist,
-  risk_warning, do_dont, recap_card, paragraph_card, source_crop,
-  key_number.
+  risk_warning, do_dont, recap_card, paragraph_card, source_crop
+  (with source quote fallback), key_number.
 
 The renderer is intentionally simple — fade/zoom motion is handled by
 ffmpeg later. We just need readable static frames.
@@ -636,6 +636,59 @@ class SketchbookRenderer:
             y += context_font.size + 10
         return img
 
+    def _source_quote_card(self, title: str, payload: dict, scene: Scene
+                           ) -> Image.Image:
+        """Render source evidence as text when no PDF crop is available."""
+        img = self._base()
+        draw = ImageDraw.Draw(img)
+        margin = 96
+        title_font = _load_font(self.font_path, max(42, self.h // 20))
+        tag_font = _load_font(self.font_path, max(28, self.h // 30))
+        quote_font = _load_font(self.font_path, max(34, self.h // 24))
+        caption_font = _load_font(self.font_path, max(30, self.h // 28))
+
+        page = scene.source_pages[0] if scene.source_pages else None
+        quote = str(payload.get("quote") or "").strip()
+        if not quote and scene.evidence_spans:
+            quote = str(scene.evidence_spans[0].quote or "").strip()
+        caption = str(
+            payload.get("caption") or payload.get("body")
+            or scene.on_screen_text or ""
+        ).strip()
+
+        y = 70
+        for line in _wrap(title, max_chars=self.cards["max_chars_title"])[:2]:
+            draw.text((margin, y), line, fill=self.fg, font=title_font)
+            y += title_font.size + 12
+        draw.rectangle([(margin, y + 8), (margin + 180, y + 16)],
+                       fill=self.accent)
+        y += 54
+
+        tag = "來源摘錄" + (f" · p.{page}" if page else "")
+        draw.text((margin, y), tag, fill=_darker(self.accent), font=tag_font)
+        y += tag_font.size + 24
+
+        box = (margin, y, self.w - margin, min(self.h - 210, y + 270))
+        draw.rounded_rectangle(box, radius=8, fill=_lighter(self.accent, 0.86),
+                               outline=_lighter(self.accent, 0.35), width=2)
+        qy = y + 30
+        if quote:
+            for line in _wrap(quote, max_chars=30)[:6]:
+                draw.text((margin + 34, qy), "「" + line + "」",
+                          fill=self.fg, font=quote_font)
+                qy += quote_font.size + 10
+        else:
+            draw.text((margin + 34, qy), "此段有來源頁註記，但沒有可顯示的摘錄。",
+                      fill=self.fg, font=quote_font)
+
+        y = box[3] + 34
+        if caption:
+            for line in _wrap(caption, max_chars=34)[:4]:
+                draw.text((margin, y), line, fill=_darker(self.fg, 0.65),
+                          font=caption_font)
+                y += caption_font.size + 10
+        return img
+
     def _source_crop(self, title: str, payload: dict, scene: Scene
                      ) -> Image.Image:
         """Show a PDF crop with a large explanation on the right.
@@ -644,7 +697,8 @@ class SketchbookRenderer:
             crop_path: str          — path to the cropped PDF image
             caption: str            — large explanation text (one or two sentences)
             quote: str              — verbatim quote from the source
-        Falls back to a paragraph card if the crop file is unreadable.
+        Falls back to a deterministic source quote card if the crop file
+        is absent or unreadable. Crop generation is optional.
         """
         img = self._base()
         draw = ImageDraw.Draw(img)
@@ -671,20 +725,19 @@ class SketchbookRenderer:
             inset = Image.open(crop_path).convert("RGB") if crop_path else None
         except Exception:
             inset = None
-        if inset is not None:
-            inset.thumbnail((crop_box[2] - crop_box[0],
-                             crop_box[3] - crop_box[1]))
-            ox = crop_box[0] + ((crop_box[2] - crop_box[0]) - inset.width) // 2
-            oy = crop_box[1] + ((crop_box[3] - crop_box[1]) - inset.height) // 2
-            # Light border to make the crop pop on a light card.
-            draw.rectangle(
-                [(ox - 6, oy - 6), (ox + inset.width + 6, oy + inset.height + 6)],
-                outline=_darker(self.fg, 0.4), width=3,
-            )
-            img.paste(inset, (ox, oy))
-        else:
-            self._placeholder(draw, "（裁切失敗，請改看下方說明）",
-                              start_y=crop_top + 20, margin=margin)
+        if inset is None:
+            return self._source_quote_card(title, payload, scene)
+
+        inset.thumbnail((crop_box[2] - crop_box[0],
+                         crop_box[3] - crop_box[1]))
+        ox = crop_box[0] + ((crop_box[2] - crop_box[0]) - inset.width) // 2
+        oy = crop_box[1] + ((crop_box[3] - crop_box[1]) - inset.height) // 2
+        # Light border to make the crop pop on a light card.
+        draw.rectangle(
+            [(ox - 6, oy - 6), (ox + inset.width + 6, oy + inset.height + 6)],
+            outline=_darker(self.fg, 0.4), width=3,
+        )
+        img.paste(inset, (ox, oy))
 
         # Right panel: caption + quote.
         right_x = margin + crop_left_w + 48

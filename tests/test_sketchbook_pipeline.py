@@ -24,6 +24,27 @@ from paperreel.stages import (build_outline, build_scene_graph, ingest_pdf,
 from paperreel.state import StateDB
 
 
+REFERENCE_ROOT = Path("dev_samples/reference")
+LEGACY_REFERENCE_ROOT = Path("dev_examples/reference")
+REFERENCE_SAMPLE_PDF = REFERENCE_ROOT / "sample.pdf"
+LEGACY_REFERENCE_SAMPLE_PDF = LEGACY_REFERENCE_ROOT / "sample.pdf"
+REFERENCE_SHORT_VIDEO = REFERENCE_ROOT / "notebooklm_short.mp4"
+REFERENCE_LONG_VIDEO = REFERENCE_ROOT / "notebooklm_long.mp4"
+REFERENCE_FRAMES_DIR = REFERENCE_ROOT / "frames"
+
+
+def _optional_reference_sample_pdf() -> Path | None:
+    if REFERENCE_SAMPLE_PDF.exists():
+        return REFERENCE_SAMPLE_PDF
+    if LEGACY_REFERENCE_SAMPLE_PDF.exists():
+        return LEGACY_REFERENCE_SAMPLE_PDF
+    return None
+
+
+def _fact_group_present(blob: str, groups: list[tuple[str, ...]]) -> bool:
+    return all(any(token in blob for token in group) for group in groups)
+
+
 def _deep_merge(base: dict, overlay: dict) -> dict:
     out = copy.deepcopy(base)
     for k, v in overlay.items():
@@ -209,6 +230,22 @@ def test_target_minutes_inserts_grounded_expansion_scenes(
     ]
     assert expansions, "under-budget target did not insert expansion scenes"
     assert all(sc["evidence_spans"] for sc in expansions)
+    assert not all(sc["scene_kind"] == "paragraph_card" for sc in expansions)
+
+    penalty_expansions = [
+        sc for sc in expansions if sc.get("scene_kind") == "penalty_table"
+    ]
+    assert penalty_expansions, "penalty_table was not expanded by row"
+    assert all(
+        len(sc.get("layout_payload", {}).get("rows") or []) == 1
+        for sc in penalty_expansions
+    )
+    payload_keys = {
+        json.dumps(sc.get("layout_payload", {}), ensure_ascii=False, sort_keys=True)
+        for sc in expansions
+    }
+    assert len(payload_keys) == len(expansions), "duplicate expansion card payload"
+
     plan = read_json(project / "intermediate" / "sketchbook_plan.json")
     assert plan["expansion_scene_count"] > 0
     assert plan["actual_estimated_seconds"] >= plan["min_seconds"]
@@ -230,21 +267,70 @@ def test_target_minutes_changes_scene_budget(
     assert script5["total_estimated_minutes"] > script2["total_estimated_minutes"]
 
 
+def test_reference_sample_path_prefers_dev_samples() -> None:
+    chosen = _optional_reference_sample_pdf()
+    if REFERENCE_SAMPLE_PDF.exists():
+        assert chosen == REFERENCE_SAMPLE_PDF
+    elif LEGACY_REFERENCE_SAMPLE_PDF.exists():
+        assert chosen == LEGACY_REFERENCE_SAMPLE_PDF
+    else:
+        assert chosen is None
+    assert REFERENCE_SHORT_VIDEO == Path("dev_samples/reference/notebooklm_short.mp4")
+    assert REFERENCE_LONG_VIDEO == Path("dev_samples/reference/notebooklm_long.mp4")
+    assert REFERENCE_FRAMES_DIR == Path("dev_samples/reference/frames")
+
+
 def test_reference_sample_contract_tiers_smoke(
     tmp_path: Path, sketchbook_cfg: dict,
 ) -> None:
-    sample = Path("dev_examples/reference/sample.pdf")
-    if not sample.exists():
-        pytest.skip("reference sample PDF not present")
+    sample = _optional_reference_sample_pdf()
+    if sample is None:
+        pytest.skip("optional reference sample PDF not present")
     project = tmp_path / "sample_contract"
     project.mkdir()
     _db, script_blob = _drive_through_script(
         project, sample, sketchbook_cfg, target_minutes="5",
     )
     text_blob = json.dumps(script_blob, ensure_ascii=False)
-    for token in ("全額訂", "30%", "50%", "75%", "100%", "3,000",
-                  "出發前45", "出發前30", "護照", "簽證", "保險"):
-        assert token in text_blob
+    checks = {
+        "45-day payment/data deadline": [
+            ("出發前45", "45 天"),
+            ("全額費用", "繳付", "正確名單", "資料"),
+        ],
+        "cancellation tiers": [
+            ("全額訂",), ("30%",), ("50%",), ("75%",), ("100%",),
+        ],
+        "NT$3,000 name/cabin change fee": [
+            ("3,000", "3000"),
+            ("改名", "更改名單", "艙房"),
+        ],
+        "within 30 days no name/cabin changes": [
+            ("出發前30", "30 天內"),
+            ("無法更動", "恕無法"),
+        ],
+        "passport/visa/boarding responsibility": [
+            ("護照",), ("簽證",), ("登船",),
+        ],
+        "rejected boarding / no refund / extra costs": [
+            ("拒絕登船", "登船"),
+            ("恕不退還", "不予退款", "不退費"),
+            ("額外費", "額外費用", "交通安排", "住宿"),
+        ],
+        "insurance/health reminders": [
+            ("保險",),
+            ("健康", "疾病", "醫療", "醫師", "適航"),
+        ],
+        "force majeure / itinerary change / possible no refund": [
+            ("不可抗力",),
+            ("行程", "變更"),
+            ("無退費義務", "不予退款", "退款"),
+        ],
+    }
+    missing = [
+        name for name, groups in checks.items()
+        if not _fact_group_present(text_blob, groups)
+    ]
+    assert not missing, "missing sample facts: " + ", ".join(missing)
 
 
 def test_review_stage_produces_artefacts(
