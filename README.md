@@ -100,21 +100,9 @@ paperreel input.pdf --project runs/demo --target-minutes 5 --voice-sample ./my_v
 - WAV 最佳；16k、24k、48k 會自動轉成 mono 24k WAV
 - 請只使用你擁有或取得授權的聲音；不要擅自使用第三方產品、公眾人物或他人的聲音
 
-可先不跑完整 PDF，用短句測試聲音：
-
-```bash
-paperreel voice-test --voice-sample ./my_voice.wav
-```
-
 沒提供 `--voice-sample` 時，paperreel 會顯示 `[INFO] 未提供 voice_sample，使用 XTTS 預設聲音`，並使用 XTTS 內建 speaker 繼續產生影片。一般使用者不用改 config 或原始碼。進階 config 仍可使用：
 
-```yaml
-tts:
-  voice_sample: "./my_voice.wav"
-```
-
-`--voice-sample` 只控制聲音來源，不是影片內容控制參數；`--target-minutes` 仍是一般使用者唯一需要調整的內容長度控制值。NotebookLM 參考音影片只能當聽感與 pacing 參考，不應作為 bundled speaker sample。voice sample 是本機檔案，請不要提交到 git。
-
+`--voice-sample` 只控制聲音來源，不是影片內容控制參數；`--target-minutes` 仍是一般使用者唯一需要調整的內容長度控制值。
 ## 進階相容選項
 
 舊版旗標仍保留給進階使用者，例如 `--style default`、`--config highend_sketchbook`、`--depth brief/deep`、`--force-stage`、`--skip-render`。正常使用不需要選 style、depth、config、renderer、VLM、SDXL 或硬體 profile。
