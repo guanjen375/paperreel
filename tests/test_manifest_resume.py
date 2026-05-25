@@ -220,6 +220,18 @@ def test_visual_writes_manifest(
         assert m["stage"] == "visuals"
         assert m["input_hash"]
         assert m["inputs"]["renderer"]["resolution"]
+        assert m["inputs"]["schema"] == "visual_artifact_v5"
+        assert m["inputs"]["layout_version"]
+
+
+def test_visual_manifest_records_layout_version(
+    project_dir: Path, tiny_pdf: Path, test_cfg: dict
+) -> None:
+    _drive_through_visuals(project_dir, tiny_pdf, test_cfg)
+    png = next(iter((project_dir / "assets" / "visuals").glob("*.png")))
+    m = read_manifest(png)
+    assert m["inputs"]["schema"] == "visual_artifact_v5"
+    assert m["inputs"]["layout_version"] == "card_layout_v1"
 
 
 def test_visual_rerenders_when_renderer_color_changes(

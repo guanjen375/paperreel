@@ -30,6 +30,12 @@ from ..renderers.sketchbook_renderer import SketchbookRenderer
 from ..state import StateDB
 
 
+# Bump this whenever deterministic card layout code changes in a way
+# that should invalidate cached PNGs even if scene/config inputs match.
+SKETCHBOOK_LAYOUT_VERSION = "sketchbook_layout_v3_safe_density"
+CARD_LAYOUT_VERSION = "card_layout_v1"
+
+
 def paths_for(project_root: str | Path) -> dict[str, Path]:
     root = Path(project_root)
     return {
@@ -71,6 +77,11 @@ def _image_config_signature(icfg: dict) -> dict[str, Any]:
     }
 
 
+def _layout_version_for(scene: Scene) -> str:
+    return (SKETCHBOOK_LAYOUT_VERSION
+            if scene.scene_kind else CARD_LAYOUT_VERSION)
+
+
 def _visual_inputs(scene: Scene, rcfg: dict, icfg: dict,
                    *,
                    source_asset_path: str | None,
@@ -82,7 +93,8 @@ def _visual_inputs(scene: Scene, rcfg: dict, icfg: dict,
     generated SDXL image) — both None for pure text cards.
     """
     return {
-        "schema": "visual_artifact_v4",
+        "schema": "visual_artifact_v5",
+        "layout_version": _layout_version_for(scene),
         "scene_id": scene.scene_id,
         "visual_type": scene.visual_type.value,
         "visual_prompt": scene.visual_prompt,
@@ -107,7 +119,7 @@ def _visual_input_hash(scene: Scene, rcfg: dict, icfg: dict,
                        source_asset_path: str | None,
                        source_asset_sha: str | None) -> str:
     return hash_inputs(
-        "visual_artifact_v4",
+        "visual_artifact_v5",
         _visual_inputs(scene, rcfg, icfg,
                        source_asset_path=source_asset_path,
                        source_asset_sha=source_asset_sha),
@@ -173,10 +185,11 @@ def run(*, project_root: str | Path, db: StateDB, config: dict,
         )
     db.start_stage(
         "visuals",
-        hash_inputs("visuals_stage_v3",
+        hash_inputs("visuals_stage_v4",
                     _renderer_config_signature(rcfg),
                     _image_config_signature(icfg),
-                    sketchbook, allow_generated),
+                    sketchbook, allow_generated,
+                    SKETCHBOOK_LAYOUT_VERSION, CARD_LAYOUT_VERSION),
     )
 
     # Lazily created on first generated_image scene; reused across the whole

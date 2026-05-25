@@ -212,3 +212,33 @@ def test_source_crop_without_crop_path_uses_quote_card(tmp_path: Path) -> None:
         out,
     )
     _assert_card(out, (1280, 720))
+
+
+def test_dense_timeline_renders_without_horizontal_overlap_layout(tmp_path: Path) -> None:
+    out = tmp_path / "dense_timeline.png"
+    events = [
+        {"value": "出發前89-60 天以上", "label": "取消者收取全額船艙費用之 30% 為取消費用", "page": 1},
+        {"value": "出發前59-32 天以上", "label": "取消者收取全額船艙費用之 50% 為取消費用", "page": 1},
+        {"value": "出發前31-16 天以上", "label": "取消者收取全額船艙費用之 75% 為取消費用", "page": 1},
+        {"value": "出發前44~31 天", "label": "更改名單或艙房分配需付每人新台幣 3,000 元", "page": 1},
+        {"value": "出發前45 天", "label": "應繳付全額費用並提供正確名單", "page": 1},
+        {"value": "出發前90 天以上", "label": "取消者收取全額訂金為取消費用", "page": 1},
+    ]
+    _renderer().render(
+        _scene("deadline_timeline", layout_payload={"events": events}),
+        out,
+    )
+    _assert_card(out, (1280, 720))
+
+
+def test_long_checklist_rows_use_dynamic_spacing(tmp_path: Path) -> None:
+    out = tmp_path / "long_checklist.png"
+    _renderer().render(
+        _scene("checklist", layout_payload={"items": [
+            {"text": "出發前44~31 天甲方欲更改名單或艙房分配時，需付每人新台幣3,000 元改名手續費", "page": 1},
+            {"text": "甲方需於出發前45 天以上提供乙方正確名單及分房，同護照上之正確英文姓名", "page": 1},
+            {"text": "甲方需於出發前45 天以上繳交護照資料及行程必要之簽證資料", "page": 1},
+        ]}),
+        out,
+    )
+    _assert_card(out, (1280, 720))

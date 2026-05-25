@@ -105,9 +105,10 @@ llm:
 
 tts:
   provider: "xtts"
-  # Pick ONE voice source:
-  #   speaker_wav: absolute path to a 6–10s 16k mono WAV (best for zh-TW
-  #                voice cloning — drop a reference clip here)
+  # Pick ONE voice source. Built-in XTTS speakers can sound accented in
+  # Mandarin; use speaker_wav with a clean local zh-TW reference clip
+  # when natural native-sounding Chinese narration matters.
+  #   speaker_wav: absolute path to a 6–10s 16k mono WAV
   #   speaker:     name of an XTTS built-in speaker
   speaker_wav: null
   speaker: "Ana Florence"
@@ -116,7 +117,9 @@ tts:
   device: "auto"                # auto | cuda | cpu
   sample_rate_hz: 48000
   format: "wav"
-  speaking_rate: 1.0
+  # Slightly slower than XTTS default; dense explainer narration otherwise
+  # sounds rushed in zh-TW.
+  speaking_rate: 0.92
 
 # Figure-to-scene matching. When a scene's source pages contain extracted
 # PDF images, the `match_visuals` stage picks the best fit and upgrades

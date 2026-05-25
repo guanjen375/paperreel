@@ -79,7 +79,7 @@ ollama pull qwen2.5:7b-instruct
 export COQUI_TOS_AGREED=1
 ```
 
-Ollama 主要用於 outline 摘要；explainer 腳本與視覺卡片仍以 PDF 抽取 facts/evidence 為核心。若 Ollama 暫時不可用，explainer plan 會退回 deterministic outline。XTTS 用於語音合成；`tts.device: auto` 會自動使用 CUDA 或 CPU。
+Ollama 主要用於 outline 摘要；explainer 腳本與視覺卡片仍以 PDF 抽取 facts/evidence 為核心。若 Ollama 暫時不可用，explainer plan 會退回 deterministic outline。XTTS 用於語音合成；`tts.device: auto` 會自動使用 CUDA 或 CPU。預設語速略低於 XTTS 原速，避免繁中導讀聽起來太趕；若想要更自然的中文口音，建議在 `tts.speaker_wav` 指向一段本機 6-10 秒乾淨的繁中參考聲音。
 
 高階硬體可以改用更大的本機模型、較大的 context、較快的 TTS/OCR，或自行開啟進階 review；這些都不是正常路徑必需。
 

@@ -167,6 +167,26 @@ class SketchbookRenderer:
     def _base(self) -> Image.Image:
         return Image.new("RGB", (self.w, self.h), self.bg)
 
+    def _content_bottom(self) -> int:
+        """Bottom of safe card content, leaving room for footer/video subtitles."""
+        return self.h - max(180, self.h // 6)
+
+    def _draw_card_title(self, draw: ImageDraw.ImageDraw, title: str, *,
+                         margin: int, y: int, font: ImageFont.ImageFont,
+                         fill: tuple[int, int, int] | None = None,
+                         max_lines: int = 2) -> int:
+        """Draw a wrapped title and return the next safe y position."""
+        fill = fill or self.fg
+        max_chars = max(14, self.cards["max_chars_title"] + 4)
+        for line in _wrap(title, max_chars=max_chars)[:max_lines]:
+            draw.text((margin, y), line, fill=fill, font=font)
+            y += font.size + 10
+        draw.line(
+            [(margin, y + 8), (margin + 260, y + 8)],
+            fill=self.accent, width=8,
+        )
+        return y + 42
+
     def _cover(self, title: str, payload: dict, scene: Scene) -> Image.Image:
         img = self._base()
         draw = ImageDraw.Draw(img)
@@ -256,19 +276,21 @@ class SketchbookRenderer:
         label_font = _load_font(self.font_path, max(26, self.h // 30))
         margin = 96
 
-        draw.text((margin, 80), title, fill=self.fg, font=title_font)
-        draw.line(
-            [(margin, 80 + title_font.size + 14),
-             (margin + 260, 80 + title_font.size + 14)],
-            fill=self.accent, width=8,
+        content_y = self._draw_card_title(
+            draw, title, margin=margin, y=80, font=title_font,
         )
 
         if not events:
             self._placeholder(draw, "（沒有偵測到時程資料）",
-                              start_y=200, margin=margin)
+                              start_y=content_y + 20, margin=margin)
             return img
 
-        track_y = int(self.h * 0.62)
+        if len(events) > 4:
+            return self._deadline_timeline_grid(
+                img, draw, events, margin=margin, top_y=max(210, content_y + 18),
+            )
+
+        track_y = max(int(self.h * 0.60), content_y + 170)
         usable_w = self.w - margin * 2
         gap = usable_w // max(1, len(events))
         x = margin + gap // 2
@@ -312,6 +334,49 @@ class SketchbookRenderer:
             x += gap
         return img
 
+    def _deadline_timeline_grid(self, img: Image.Image,
+                                draw: ImageDraw.ImageDraw,
+                                events: list[dict], *, margin: int, top_y: int
+                                ) -> Image.Image:
+        """Dense timeline layout used when long labels would overlap."""
+        rows_per_col = (len(events) + 1) // 2
+        gutter = 56
+        col_w = (self.w - margin * 2 - gutter) // 2
+        bottom_y = self._content_bottom()
+        row_h = max(150, (bottom_y - top_y) // max(1, rows_per_col))
+        value_font = _load_font(self.font_path, max(34, self.h // 28))
+        label_font = _load_font(self.font_path, max(24, self.h // 40))
+        page_font = _load_font(self.font_path, max(22, self.h // 48))
+
+        for i, ev in enumerate(events):
+            col = i // rows_per_col
+            row = i % rows_per_col
+            x = margin + col * (col_w + gutter)
+            y = top_y + row * row_h
+            cx = x + 20
+
+            draw.line([(cx, y + 18), (cx, y + row_h - 18)],
+                      fill=_lighter(self.accent, 0.18), width=5)
+            draw.ellipse([(cx - 14, y + 18), (cx + 14, y + 46)],
+                         fill=self.accent, outline=_darker(self.accent), width=3)
+
+            value = str(ev.get("value", ""))[:18]
+            label = str(ev.get("label", ""))[:58]
+            page = ev.get("page")
+            text_x = x + 56
+            text_w_chars = 24 if col_w > 760 else 20
+            draw.text((text_x, y + 10), value, fill=self.fg, font=value_font)
+            ly = y + 10 + value_font.size + 10
+            for line in _wrap(label, max_chars=text_w_chars)[:2]:
+                draw.text((text_x, ly), line,
+                          fill=_darker(self.fg, 0.65), font=label_font)
+                ly += label_font.size + 6
+            if page is not None:
+                draw.text((text_x, min(ly + 4, y + row_h - page_font.size - 8)),
+                          f"p.{page}", fill=_darker(self.accent),
+                          font=page_font)
+        return img
+
     def _penalty_table(self, title: str, payload: dict) -> Image.Image:
         img = self._base()
         draw = ImageDraw.Draw(img)
@@ -321,21 +386,19 @@ class SketchbookRenderer:
         cell_font = _load_font(self.font_path, max(28, self.h // 30))
         margin = 96
 
-        draw.text((margin, 80), title, fill=self.fg, font=title_font)
-        draw.line(
-            [(margin, 80 + title_font.size + 14),
-             (margin + 260, 80 + title_font.size + 14)],
-            fill=self.accent, width=8,
+        y = self._draw_card_title(
+            draw, title, margin=margin, y=80, font=title_font,
         )
 
         if not rows:
             self._placeholder(draw, "（沒有偵測到罰則／費用資料）",
-                              start_y=200, margin=margin)
+                              start_y=y + 20, margin=margin)
             return img
 
         col_value_w = int((self.w - margin * 2) * 0.28)
         col_cond_w = (self.w - margin * 2) - col_value_w
-        y = 220
+        y = max(210, y + 10)
+        bottom = self._content_bottom()
 
         # Header strip.
         draw.rectangle(
@@ -351,6 +414,8 @@ class SketchbookRenderer:
         for i, row in enumerate(rows):
             zebra = _lighter(self.bg, 0.04) if i % 2 == 0 else self.bg
             row_h = cell_font.size * 3 + 24
+            if y + row_h > bottom:
+                break
             draw.rectangle(
                 [(margin, y), (self.w - margin, y + row_h)],
                 fill=zebra,
@@ -381,28 +446,37 @@ class SketchbookRenderer:
     def _checklist(self, title: str, payload: dict) -> Image.Image:
         img = self._base()
         draw = ImageDraw.Draw(img)
-        items = list(payload.get("items") or [])[: self.cards["max_checklist_items"]]
+        items = list(payload.get("items") or [])[: min(self.cards["max_checklist_items"], 4)]
         title_font = _load_font(self.font_path, max(48, self.h // 16))
         item_font = _load_font(self.font_path, max(32, self.h // 26))
+        page_font = _load_font(self.font_path, max(22, self.h // 46))
         margin = 96
 
-        draw.text((margin, 80), title, fill=self.fg, font=title_font)
-        draw.line(
-            [(margin, 80 + title_font.size + 14),
-             (margin + 260, 80 + title_font.size + 14)],
-            fill=self.accent, width=8,
+        y = self._draw_card_title(
+            draw, title, margin=margin, y=80, font=title_font,
         )
 
         if not items:
             self._placeholder(draw, "（沒有偵測到應辦事項）",
-                              start_y=200, margin=margin)
+                              start_y=y + 20, margin=margin)
             return img
 
-        y = 220
+        y = max(210, y + 10)
+        bottom = self._content_bottom()
+        right_reserved = 150
         for item in items:
             text = str(item.get("text", "")) if isinstance(item, dict) else str(item)
             page = item.get("page") if isinstance(item, dict) else None
             box_size = item_font.size + 12
+            x = margin + box_size + 26
+            usable_w = self.w - margin - right_reserved - x
+            max_chars = max(18, min(self.cards["max_chars_per_bullet"], usable_w // max(1, item_font.size)))
+            lines = _wrap(text, max_chars=max_chars)[:2]
+            text_h = max(box_size, len(lines) * (item_font.size + 8))
+            row_h = text_h + 34
+
+            if y + row_h > bottom:
+                break
             draw.rectangle(
                 [(margin, y), (margin + box_size, y + box_size)],
                 outline=self.accent, width=5,
@@ -411,25 +485,21 @@ class SketchbookRenderer:
                        (margin + box_size // 2, y + box_size - 8),
                        (margin + box_size - 8, y + 10)],
                       fill=self.accent, width=6)
-            x = margin + box_size + 26
-            lines = _wrap(text, max_chars=self.cards["max_chars_per_bullet"])[:2]
             for li, line in enumerate(lines):
-                draw.text((x, y + li * (item_font.size + 6)),
+                draw.text((x, y + li * (item_font.size + 8)),
                           line, fill=self.fg, font=item_font)
             if page is not None:
                 draw.text(
-                    (self.w - margin - 120, y),
-                    f"p.{page}", fill=_darker(self.fg, 0.55), font=item_font,
+                    (self.w - margin - 96, y + 4),
+                    f"p.{page}", fill=_darker(self.fg, 0.55), font=page_font,
                 )
-            y += box_size + 24
-            if y > self.h - 140:
-                break
+            y += row_h
         return img
 
     def _risk_warning(self, title: str, payload: dict) -> Image.Image:
         img = self._base()
         draw = ImageDraw.Draw(img)
-        items = list(payload.get("items") or [])[: self.cards["max_bullets"]]
+        items = list(payload.get("items") or [])[: min(self.cards["max_bullets"], 4)]
         title_font = _load_font(self.font_path, max(48, self.h // 16))
         item_font = _load_font(self.font_path, max(30, self.h // 28))
         margin = 96
@@ -440,8 +510,12 @@ class SketchbookRenderer:
         eyebrow_font = _load_font(self.font_path, max(28, self.h // 30))
         draw.text((margin, 64), "⚠ 風險 · 注意",
                   fill=warn, font=eyebrow_font)
-        draw.text((margin, 110), title, fill=self.fg, font=title_font)
-        y = 110 + title_font.size + 40
+        y = 110
+        for line in _wrap(title, max_chars=self.cards["max_chars_title"] + 4)[:2]:
+            draw.text((margin, y), line, fill=self.fg, font=title_font)
+            y += title_font.size + 10
+        y += 24
+        bottom = self._content_bottom()
 
         if not items:
             self._placeholder(draw, "（沒有偵測到風險條款）",
@@ -451,13 +525,16 @@ class SketchbookRenderer:
         for it in items:
             text = it.get("text", "") if isinstance(it, dict) else str(it)
             page = it.get("page") if isinstance(it, dict) else None
+            lines = _wrap(text, max_chars=30)[:2]
+            row_h = item_font.size * len(lines) + 34
+            if y + row_h > bottom:
+                break
             draw.rectangle(
                 [(margin - 12, y - 4),
-                 (self.w - margin, y + item_font.size * 2 + 12)],
+                 (self.w - margin, y + row_h - 10)],
                 fill=_lighter((255, 220, 220), 0.05),
                 outline=warn, width=3,
             )
-            lines = _wrap(text, max_chars=32)[:2]
             for li, line in enumerate(lines):
                 draw.text(
                     (margin + 8, y + li * (item_font.size + 6)),
@@ -468,9 +545,7 @@ class SketchbookRenderer:
                     (self.w - margin - 120, y),
                     f"p.{page}", fill=warn, font=item_font,
                 )
-            y += item_font.size * 2 + 36
-            if y > self.h - 140:
-                break
+            y += row_h + 14
         return img
 
     def _do_dont(self, title: str, payload: dict) -> Image.Image:
@@ -481,24 +556,22 @@ class SketchbookRenderer:
         item_font = _load_font(self.font_path, max(28, self.h // 30))
         margin = 96
 
-        draw.text((margin, 80), title, fill=self.fg, font=title_font)
-        draw.line(
-            [(margin, 80 + title_font.size + 14),
-             (margin + 260, 80 + title_font.size + 14)],
-            fill=self.accent, width=8,
+        top_y = self._draw_card_title(
+            draw, title, margin=margin, y=80, font=title_font,
         )
 
-        do_items = list(payload.get("do") or [])[: self.cards["max_bullets"]]
-        dont_items = list(payload.get("dont") or [])[: self.cards["max_bullets"]]
+        do_items = list(payload.get("do") or [])[: min(self.cards["max_bullets"], 4)]
+        dont_items = list(payload.get("dont") or [])[: min(self.cards["max_bullets"], 4)]
 
         col_w = (self.w - margin * 3) // 2
-        top_y = 220
+        top_y = max(210, top_y + 10)
+        bottom = self._content_bottom()
         do_color = (32, 150, 96)
         dont_color = (200, 60, 60)
 
         # DO column.
         draw.rectangle(
-            [(margin, top_y), (margin + col_w, self.h - 120)],
+            [(margin, top_y), (margin + col_w, bottom)],
             outline=do_color, width=4,
         )
         draw.text((margin + 24, top_y + 18), "✓ 應該做",
@@ -513,13 +586,13 @@ class SketchbookRenderer:
                     fill=self.fg, font=item_font,
                 )
             y += item_font.size * 2 + 22
-            if y > self.h - 160:
+            if y + item_font.size * 2 > bottom - 20:
                 break
 
         # DON'T column.
         dx = margin * 2 + col_w
         draw.rectangle(
-            [(dx, top_y), (dx + col_w, self.h - 120)],
+            [(dx, top_y), (dx + col_w, bottom)],
             outline=dont_color, width=4,
         )
         draw.text((dx + 24, top_y + 18), "✗ 不要做",
@@ -534,7 +607,7 @@ class SketchbookRenderer:
                     fill=self.fg, font=item_font,
                 )
             y += item_font.size * 2 + 22
-            if y > self.h - 160:
+            if y + item_font.size * 2 > bottom - 20:
                 break
         return img
 
@@ -556,7 +629,8 @@ class SketchbookRenderer:
         y += 26
 
         items = payload.get("items") or _split_narration(scene.narration_text_zh_tw)
-        for i, item in enumerate(list(items)[: self.cards["max_bullets"]], start=1):
+        bottom = self._content_bottom()
+        for i, item in enumerate(list(items)[: min(self.cards["max_bullets"], 4)], start=1):
             text = item.get("text", "") if isinstance(item, dict) else str(item)
             bullet = f"{i}."
             draw.text((margin, y), bullet, fill=self.accent, font=item_font)
@@ -568,7 +642,7 @@ class SketchbookRenderer:
                     line, fill=self.fg, font=item_font,
                 )
             y += item_font.size * 2 + 18
-            if y > self.h - 140:
+            if y > bottom:
                 break
         return img
 
@@ -594,7 +668,7 @@ class SketchbookRenderer:
         for line in _wrap(text, max_chars=self.cards["max_chars_subtitle"])[:8]:
             draw.text((margin, y), line, fill=self.fg, font=body_font)
             y += body_font.size + 16
-            if y > self.h - 140:
+            if y > self._content_bottom():
                 break
         return img
 
