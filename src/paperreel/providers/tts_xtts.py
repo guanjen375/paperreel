@@ -23,6 +23,7 @@ interactive CPML license prompt.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import wave
@@ -35,6 +36,9 @@ from .tts_base import TTSProvider
 
 XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 DEFAULT_SPEAKER = "Ana Florence"   # 中性女聲, XTTS 內建
+_XTTS_ZH_SAFE_CHARS = 80
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])\s*")
+_CLAUSE_BOUNDARY = re.compile(r"(?<=[，、,：:])\s*")
 
 
 class XttsUnavailable(RuntimeError):
@@ -48,6 +52,56 @@ def _ffmpeg_bin() -> str:
 def _wav_duration_seconds(path: Path) -> float:
     with wave.open(str(path), "rb") as w:
         return w.getnframes() / max(1, w.getframerate())
+
+
+def _split_xtts_text(text: str, *, max_chars: int = _XTTS_ZH_SAFE_CHARS
+                     ) -> list[str]:
+    """Split text before Coqui XTTS sees it.
+
+    XTTS warns and may truncate Chinese text above roughly 82 characters
+    even with ``split_sentences=True``. We split deterministically at
+    sentence/clause boundaries, then hard-wrap any remaining long clause.
+    """
+    clean = re.sub(r"\s+", " ", text.strip())
+    if not clean:
+        return []
+
+    pieces: list[str] = []
+    for sentence in _SENTENCE_BOUNDARY.split(clean):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if len(sentence) <= max_chars:
+            pieces.append(sentence)
+            continue
+        for clause in _CLAUSE_BOUNDARY.split(sentence):
+            clause = clause.strip()
+            if not clause:
+                continue
+            while len(clause) > max_chars:
+                pieces.append(clause[:max_chars])
+                clause = clause[max_chars:].strip()
+            if clause:
+                pieces.append(clause)
+
+    chunks: list[str] = []
+    current = ""
+    for piece in pieces:
+        if not current:
+            current = piece
+        elif len(current) + len(piece) <= max_chars:
+            current += piece
+        else:
+            chunks.append(current)
+            current = piece
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _concat_file_line(path: Path) -> str:
+    escaped = str(path).replace("'", "'\\''")
+    return f"file '{escaped}'"
 
 
 class XttsTTS(TTSProvider):
@@ -110,9 +164,6 @@ class XttsTTS(TTSProvider):
         ensure_dir(out.parent)
         tts = self._ensure_model()
 
-        # XTTS writes 24 kHz wav natively; transcode to target SR below.
-        raw_wav = out.with_suffix(".xtts.raw.wav")
-
         speaker_kwargs: dict[str, Any] = {}
         if self.speaker_wav:
             speaker_kwargs["speaker_wav"] = str(self.speaker_wav)
@@ -120,34 +171,59 @@ class XttsTTS(TTSProvider):
             # voice param (per-call) wins over config-level speaker.
             speaker_kwargs["speaker"] = voice or self.speaker
 
-        try:
-            tts.tts_to_file(
-                text=text,
-                language=self.language,
-                file_path=str(raw_wav),
-                split_sentences=True,
-                **speaker_kwargs,
-            )
-        except Exception as e:
-            raw_wav.unlink(missing_ok=True)
-            raise XttsUnavailable(f"xtts synth failed: {e!r}") from e
+        chunks = _split_xtts_text(text)
+        if not chunks:
+            raise XttsUnavailable("xtts: empty text after normalisation")
 
-        # Apply speaking_rate via ffmpeg atempo and resample.
-        atempo = max(0.5, min(2.0, float(speaking_rate)))  # ffmpeg atempo range
+        raw_parts: list[Path] = []
+        concat_list = out.with_suffix(".xtts.concat.txt")
+        concat_wav = out.with_suffix(".xtts.concat.raw.wav")
+        source_wav: Path | None = None
         try:
+            for idx, chunk in enumerate(chunks):
+                raw_part = out.with_suffix(f".xtts.{idx:03d}.raw.wav")
+                tts.tts_to_file(
+                    text=chunk,
+                    language=self.language,
+                    file_path=str(raw_part),
+                    split_sentences=False,
+                    **speaker_kwargs,
+                )
+                raw_parts.append(raw_part)
+
+            if len(raw_parts) == 1:
+                source_wav = raw_parts[0]
+            else:
+                concat_list.write_text(
+                    "\n".join(_concat_file_line(p) for p in raw_parts) + "\n"
+                )
+                subprocess.run(
+                    [_ffmpeg_bin(), "-y", "-loglevel", "error",
+                     "-f", "concat", "-safe", "0",
+                     "-i", str(concat_list),
+                     str(concat_wav)],
+                    check=True,
+                )
+                source_wav = concat_wav
+
+            # Apply speaking_rate via ffmpeg atempo and resample.
+            atempo = max(0.5, min(2.0, float(speaking_rate)))
             subprocess.run(
                 [_ffmpeg_bin(), "-y", "-loglevel", "error",
-                 "-i", str(raw_wav),
+                 "-i", str(source_wav),
                  "-filter:a", f"atempo={atempo}",
                  "-ar", str(int(sample_rate_hz)),
                  "-ac", "1",
                  str(out)],
                 check=True,
             )
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raw_wav.unlink(missing_ok=True)
-            raise XttsUnavailable(
-                f"ffmpeg post-processing failed (ffmpeg on PATH?): {e!r}"
-            ) from e
-        raw_wav.unlink(missing_ok=True)
+        except Exception as e:
+            out.unlink(missing_ok=True)
+            raise XttsUnavailable(f"xtts synth failed: {e!r}") from e
+        finally:
+            concat_list.unlink(missing_ok=True)
+            concat_wav.unlink(missing_ok=True)
+            for raw_part in raw_parts:
+                raw_part.unlink(missing_ok=True)
+
         return _wav_duration_seconds(out)

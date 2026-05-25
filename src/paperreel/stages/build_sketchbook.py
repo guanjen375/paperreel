@@ -445,7 +445,7 @@ def _build_expansion_scene(base: ScriptScene, seq: int) -> ScriptScene | None:
             body=_penalty_item_body(item),
             layout_payload={"rows": [item]},
             narration=_penalty_item_narration(item),
-            duration=22.0,
+            duration=18.0,
         )
     if kind == "risk_warning":
         items = list((base.layout_payload or {}).get("items") or [])
@@ -461,7 +461,7 @@ def _build_expansion_scene(base: ScriptScene, seq: int) -> ScriptScene | None:
             body=str(item.get("text") or ""),
             layout_payload={"items": [item]},
             narration=_risk_item_narration(item),
-            duration=24.0,
+            duration=18.0,
         )
     if kind == "checklist":
         items = list((base.layout_payload or {}).get("items") or [])
@@ -478,7 +478,7 @@ def _build_expansion_scene(base: ScriptScene, seq: int) -> ScriptScene | None:
             body=str(item.get("text") or ""),
             layout_payload={"items": [item], "group": group},
             narration=_checklist_item_narration(item, group),
-            duration=22.0,
+            duration=18.0,
         )
     if kind == "deadline_timeline":
         events = list((base.layout_payload or {}).get("events") or [])
@@ -494,7 +494,7 @@ def _build_expansion_scene(base: ScriptScene, seq: int) -> ScriptScene | None:
             body=_deadline_item_body(item),
             layout_payload={"events": [item]},
             narration=_deadline_item_narration(item),
-            duration=22.0,
+            duration=18.0,
         )
     if kind == "key_number":
         items = list((base.layout_payload or {}).get("items") or [])
@@ -510,7 +510,7 @@ def _build_expansion_scene(base: ScriptScene, seq: int) -> ScriptScene | None:
             body=str(item.get("context") or item.get("value") or ""),
             layout_payload={"items": [item]},
             narration=_keynumber_narration([item]),
-            duration=18.0,
+            duration=16.0,
         )
     if kind == "do_dont":
         do_items = [{**it, "_column": "do"} for it in (base.layout_payload or {}).get("do") or []]
@@ -530,7 +530,7 @@ def _build_expansion_scene(base: ScriptScene, seq: int) -> ScriptScene | None:
             body=str(clean.get("text") or ""),
             layout_payload=payload,
             narration=f"這一點請特別記住：{str(clean.get('text') or '')[:80]}。",
-            duration=20.0,
+            duration=18.0,
         )
     return None
 

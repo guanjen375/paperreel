@@ -41,7 +41,7 @@ _SECONDS_BY_KIND: dict[str, float] = {
 }
 
 _DEFAULT_SCENE_SECONDS = 22.0
-_EXPANSION_SCENE_SECONDS = 22.0
+_EXPANSION_SCENE_SECONDS = 18.0
 
 # Importance ranks — higher number wins when culling.
 _IMPORTANCE_RANK = {"high": 3, "medium": 2, "low": 1}
@@ -277,8 +277,9 @@ def select_scenes(scenes: list[ScriptScene], target: DurationTarget
     pad_targets: list[str] = []
     if keep_seconds < target.min_seconds:
         slots = _expansion_slots(keep)
+        padding_goal = min(target.target_seconds, target.max_seconds)
         for sc in slots:
-            if keep_seconds >= target.min_seconds:
+            if keep_seconds >= padding_goal:
                 break
             pad_targets.append(sc.scene_id)
             keep_seconds += _EXPANSION_SCENE_SECONDS

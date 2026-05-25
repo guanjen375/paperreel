@@ -55,7 +55,8 @@ def _audio_inputs(scene: Scene, tts_cfg: dict) -> dict[str, Any]:
     couldn't catch that.
     """
     return {
-        "schema": "audio_artifact_v2",
+        "schema": "audio_artifact_v3",
+        "text_chunking": "xtts_zh_safe_80",
         "narration_sha256": sha256_text(scene.narration_text_zh_tw),
         "narration_len": len(scene.narration_text_zh_tw),
         "language": tts_cfg.get("language"),
@@ -69,7 +70,7 @@ def _audio_inputs(scene: Scene, tts_cfg: dict) -> dict[str, Any]:
 
 
 def _audio_input_hash(scene: Scene, tts_cfg: dict) -> str:
-    return hash_inputs("audio_artifact_v2", _audio_inputs(scene, tts_cfg))
+    return hash_inputs("audio_artifact_v3", _audio_inputs(scene, tts_cfg))
 
 
 def _wav_duration_seconds(path: Path) -> float | None:
