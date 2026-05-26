@@ -32,7 +32,7 @@ from ..state import StateDB
 
 # Bump this whenever deterministic card layout code changes in a way
 # that should invalidate cached PNGs even if scene/config inputs match.
-SKETCHBOOK_LAYOUT_VERSION = "sketchbook_layout_v3_safe_density"
+SKETCHBOOK_LAYOUT_VERSION = "sketchbook_layout_v4_visual_first"
 CARD_LAYOUT_VERSION = "card_layout_v1"
 
 
@@ -104,6 +104,14 @@ def _visual_inputs(scene: Scene, rcfg: dict, icfg: dict,
         "source_pages": list(scene.source_pages),
         "scene_kind": scene.scene_kind,
         "layout_payload": scene.layout_payload,
+        "visual_anchor": (
+            scene.visual_anchor.model_dump(mode="json")
+            if scene.visual_anchor else None
+        ),
+        "screen_plan": (
+            scene.screen_plan.model_dump(mode="json")
+            if scene.screen_plan else None
+        ),
         "facts": [f.model_dump(mode="json") for f in scene.facts],
         "evidence_spans": [e.model_dump(mode="json") for e in scene.evidence_spans],
         "source_asset_path": source_asset_path,

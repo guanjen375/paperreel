@@ -17,9 +17,11 @@ doc_explainer:
   crops:
     enabled: true
 
-# Match-visuals stage is bypassed in sketchbook mode by
-# auto_match_pdf_figures=false above; we also disable SDXL so a stray
-# generated_image type can't accidentally load a 7 GB model.
+# Generic match-visuals is bypassed in sketchbook mode by
+# auto_match_pdf_figures=false above. Visual-rich documents still get
+# source visual anchors during planning from the ingest visual_inventory.
+# SDXL stays disabled so a stray generated_image type can't accidentally
+# load a 7 GB model.
 visuals:
   prefer_pdf_figures: false
 

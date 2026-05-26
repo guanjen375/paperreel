@@ -28,6 +28,9 @@ from ..io_utils import atomic_write_json, atomic_write_text, ensure_dir, read_js
 from ..models import (ChunkedSources, DocProfile, SceneGraph, VisualType)
 from ..state import StateDB
 from ..utils import grounding
+from ..utils.visual_inventory import (anchor_source_path, is_visual_first_kind,
+                                      narration_screen_overlap,
+                                      screen_plan_to_text)
 
 
 def paths_for(project_root: str | Path) -> dict[str, Path]:
@@ -158,6 +161,9 @@ def run(*, project_root: str | Path, db: StateDB, config: dict
                         issue.message, sc.scene_id,
                     ))
 
+    visual_metrics = _visual_first_metrics(graph, sources, profile)
+    findings.extend(visual_metrics.pop("findings"))
+
     # PDF coverage report — pages that contributed zero scenes show up
     # so reviewers can decide whether to extend the chapter list.
     total_pages = sources.page_count or 1
@@ -200,7 +206,7 @@ def run(*, project_root: str | Path, db: StateDB, config: dict
     )
 
     summary = {
-        "schema": "semantic_quality_v1",
+        "schema": "semantic_quality_v2",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "style": "sketchbook" if sketchbook else "default",
         "doc_kind": (profile.doc_kind.value if profile else None),
@@ -221,6 +227,10 @@ def run(*, project_root: str | Path, db: StateDB, config: dict
         "generated_image_count": sum(
             1 for sc in graph.scenes if sc.visual_type == VisualType.generated_image
         ),
+        "generated_image_used": any(
+            sc.visual_type == VisualType.generated_image for sc in graph.scenes
+        ),
+        **visual_metrics,
         "expected_fact_types": expected_fact_summary["types"],
         "findings": findings,
         "vlm_results": vlm_results,
@@ -246,6 +256,105 @@ def _finding(code: str, severity: str, message: str,
              scene_id: str | None = None) -> dict:
     return {"code": code, "severity": severity, "message": message,
             "scene_id": scene_id}
+
+
+def _visual_first_metrics(graph: SceneGraph, sources: ChunkedSources,
+                          profile: DocProfile | None) -> dict[str, Any]:
+    document_visual_rich = bool(profile and profile.document_visual_rich)
+    useful_visuals = [
+        c for c in sources.visual_inventory
+        if c.likely_useful
+        and c.visual_role not in {"decorative", "logo", "seal", "signature"}
+    ]
+    visual_first_scenes = [
+        sc for sc in graph.scenes if is_visual_first_kind(sc.scene_kind)
+    ]
+    source_visual_scenes = [
+        sc for sc in visual_first_scenes
+        if sc.visual_anchor is not None or sc.visual_source_paths
+    ]
+    text_only_scenes = [
+        sc for sc in graph.scenes
+        if not sc.visual_anchor and not sc.visual_source_paths
+        and (sc.scene_kind or "") not in {"cover", "section_intro", "recap_card"}
+    ]
+    scenes_without_anchor = [
+        sc.scene_id for sc in visual_first_scenes
+        if sc.visual_anchor is None and not sc.visual_source_paths
+    ]
+
+    overlaps: list[float] = []
+    findings: list[dict] = []
+    for sc in visual_first_scenes:
+        screen_text = screen_plan_to_text(
+            sc.screen_plan, sc.on_screen_text, sc.layout_payload,
+        )
+        overlap = narration_screen_overlap(screen_text, sc.narration_text_zh_tw)
+        overlaps.append(overlap)
+        if overlap >= 0.72 and len(screen_text.strip()) >= 16:
+            findings.append(_finding(
+                "narration_screen_overlap_too_high", "warning",
+                f"screen text is too similar to narration (overlap={overlap:.2f})",
+                sc.scene_id,
+            ))
+
+        anchor = sc.visual_anchor
+        src = anchor_source_path(anchor) if anchor is not None else (
+            sc.visual_source_paths[0] if sc.visual_source_paths else None
+        )
+        role = getattr(anchor, "visual_role", None) if anchor is not None else None
+        if role == "source_page_crop" and src:
+            size = _safe_image_size(Path(src))
+            if size:
+                aspect = size[0] / max(1, size[1])
+                if aspect < 0.68 or aspect > 1.9:
+                    findings.append(_finding(
+                        "full_page_tiny_screenshot", "warning",
+                        f"full-page source crop aspect {aspect:.2f} may be too small when fitted",
+                        sc.scene_id,
+                    ))
+
+    source_visual_scene_count = len(source_visual_scenes)
+    text_only_scene_count = len(text_only_scenes)
+    if document_visual_rich and graph.scenes:
+        if source_visual_scene_count < max(1, len(graph.scenes) // 3):
+            findings.append(_finding(
+                "image_rich_but_mostly_text_cards", "warning",
+                "document is visual-rich but too few scenes use source visuals",
+            ))
+        if text_only_scene_count > source_visual_scene_count:
+            findings.append(_finding(
+                "image_rich_but_mostly_text_cards", "warning",
+                "most non-intro scenes are still text-only cards",
+            ))
+    if useful_visuals and source_visual_scene_count == 0:
+        findings.append(_finding(
+            "source_visuals_available_but_unused", "warning",
+            f"{len(useful_visuals)} useful source visual(s) were available but none were used",
+        ))
+
+    used_paths: set[str] = set()
+    for sc in source_visual_scenes:
+        if sc.visual_anchor is not None:
+            src = anchor_source_path(sc.visual_anchor)
+            if src:
+                used_paths.add(src)
+        used_paths.update(sc.visual_source_paths)
+
+    avg_overlap = sum(overlaps) / len(overlaps) if overlaps else 0.0
+    coverage = source_visual_scene_count / max(1, len(visual_first_scenes))
+    return {
+        "document_visual_rich": document_visual_rich,
+        "visual_first_scene_count": len(visual_first_scenes),
+        "source_visual_scene_count": source_visual_scene_count,
+        "text_only_scene_count": text_only_scene_count,
+        "visual_anchor_coverage": round(coverage, 3),
+        "average_narration_screen_overlap": round(avg_overlap, 3),
+        "scenes_without_visual_anchor": scenes_without_anchor,
+        "source_visuals_available": len(useful_visuals),
+        "source_visuals_used": len(used_paths),
+        "findings": findings,
+    }
 
 
 def _safe_image_size(path: Path) -> tuple[int, int] | None:

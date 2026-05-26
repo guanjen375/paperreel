@@ -52,6 +52,9 @@ SCENE_KINDS = (
     "cover", "section_intro", "deadline_timeline", "penalty_table",
     "checklist", "risk_warning", "do_dont", "recap_card",
     "paragraph_card", "source_crop", "key_number",
+    "source_visual_explainer", "comparison_visual_card",
+    "process_visual_card", "figure_explainer",
+    "source_table_explainer", "source_screenshot_explainer",
 )
 
 
@@ -116,6 +119,10 @@ class PdfPage(BaseModel):
     # scanned pages doesn't masquerade as a clean digital PDF, and lets
     # downstream stages prefer figures over OCR'd text where appropriate.
     text_source: PageTextSource = "text"
+    width: float | None = None
+    height: float | None = None
+    text_area_ratio: float | None = None
+    image_area_ratio: float | None = None
 
 
 class PdfChunk(BaseModel):
@@ -126,6 +133,36 @@ class PdfChunk(BaseModel):
     text: str
     cjk_char_count: int
     headings: list[str] = []
+
+
+class VisualCandidate(BaseModel):
+    """One source visual candidate discovered during ingest.
+
+    Candidates are deliberately source-only: extracted PDF images,
+    page renders, or crops derived from the PDF. Generated images never
+    enter this inventory.
+    """
+    model_config = ConfigDict(extra="ignore")
+    candidate_id: str
+    page: int
+    image_path: str | None = None
+    page_render_path: str | None = None
+    crop_path: str | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    nearby_heading: str | None = None
+    nearby_caption: str | None = None
+    nearby_text: str | None = None
+    image_width: int | None = None
+    image_height: int | None = None
+    image_size: tuple[int, int] | None = None
+    page_area_ratio: float | None = None
+    visual_role: str = "unknown"
+    salience_score: float = 0.0
+    is_decorative: bool = False
+    likely_useful: bool = False
+    repeated: bool = False
+    source_image_id: str | None = None
+    source_quote: str | None = None
 
 
 class ChunkedSources(BaseModel):
@@ -140,6 +177,7 @@ class ChunkedSources(BaseModel):
     pages: list[PdfPage]
     chunks: list[PdfChunk]
     images: list[PdfImage] = []
+    visual_inventory: list[VisualCandidate] = []
 
 
 # ---------- document profile ----------
@@ -161,6 +199,34 @@ class DocProfile(BaseModel):
     # side coerces away precision.
     structural_hits: dict[str, float] = {}
     suggested_storyboard: list[str] = []
+    document_visual_rich: bool = False
+    visual_tutorial: bool = False
+    visual_rich_score: float = 0.0
+    source_visuals_available: int = 0
+
+
+class VisualAnchor(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    page: int
+    image_path: str | None = None
+    page_render_path: str | None = None
+    crop_path: str | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    visual_role: str | None = None
+    caption: str | None = None
+    source_quote: str | None = None
+    nearby_heading: str | None = None
+    why_this_visual: str | None = None
+
+
+class ScreenPlan(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    headline: str | None = None
+    callouts: list[str] = []
+    labels: list[str] = []
+    highlight_regions: list[dict[str, Any]] = []
+    max_screen_text: int | None = None
+    layout_hint: str | None = None
 
 
 # ---------- outline / plan ----------
@@ -239,6 +305,8 @@ class ScriptScene(BaseModel):
     evidence_spans: list[EvidenceSpan] = []
     layout_payload: dict[str, Any] = {}
     importance: str | None = None
+    visual_anchor: VisualAnchor | None = None
+    screen_plan: ScreenPlan | None = None
 
 
 class Script(BaseModel):
@@ -292,6 +360,8 @@ class Scene(BaseModel):
     evidence_spans: list[EvidenceSpan] = []
     layout_payload: dict[str, Any] = {}
     importance: str | None = None
+    visual_anchor: VisualAnchor | None = None
+    screen_plan: ScreenPlan | None = None
 
 
 class SceneGraph(BaseModel):

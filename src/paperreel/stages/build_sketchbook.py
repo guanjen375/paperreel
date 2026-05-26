@@ -21,9 +21,13 @@ import json
 from typing import Any
 
 from ..models import (ChunkedSources, DocKind, DocProfile, EvidenceSpan,
-                       Fact, LessonOutline, ScriptScene, VisualType)
+                       Fact, LessonOutline, ScriptScene, VisualCandidate,
+                       VisualType)
 from ..providers.llm_base import LLMProvider
 from ..utils import doc_classify, fact_extract, grounding
+from ..utils.visual_inventory import (anchor_from_candidate,
+                                      candidate_source_path,
+                                      useful_candidates)
 from ..utils.scene_budget import (DurationTarget, estimated_seconds,
                                    resolve_target, select_scenes)
 from ..utils.text_cleaning import cjk_char_count, normalise_text
@@ -49,6 +53,13 @@ def build_sketchbook_scenes(
     """
     page_text = {pg.page: pg.text for pg in sources.pages}
     page_facts = fact_extract.extract_from_pages(page_text)
+
+    if _is_visual_first_profile(profile):
+        return _build_visual_first_scenes(
+            sources=sources, outline=outline, profile=profile,
+            duration=duration, provider=provider,
+            use_llm_polish=use_llm_polish, page_text=page_text,
+        )
 
     storyboard = doc_classify.storyboard_for(profile.doc_kind)
     scenes: list[ScriptScene] = []
@@ -127,6 +138,381 @@ def build_sketchbook_scenes(
     return selected, plan_report
 
 
+# ---------- visual-first storyboard ----------
+
+
+def _is_visual_first_profile(profile: DocProfile) -> bool:
+    return bool(
+        profile.document_visual_rich
+        and profile.doc_kind not in {DocKind.contract, DocKind.form, DocKind.policy}
+    )
+
+
+def _build_visual_first_scenes(
+    *,
+    sources: ChunkedSources,
+    outline: LessonOutline,
+    profile: DocProfile,
+    duration: DurationTarget,
+    provider: LLMProvider | None,
+    use_llm_polish: bool,
+    page_text: dict[int, str],
+) -> tuple[list[ScriptScene], dict]:
+    candidates = useful_candidates(list(sources.visual_inventory or []))
+    if not candidates:
+        # Extremely old artefacts can be classified visual-rich from the
+        # image count but lack inventory details. Fall back to the
+        # existing text-card builder rather than invent visuals.
+        return build_sketchbook_scenes(
+            sources=sources,
+            outline=outline,
+            profile=profile.model_copy(update={"document_visual_rich": False}),
+            duration=duration,
+            cards_cfg={},
+            provider=provider,
+            use_llm_polish=use_llm_polish,
+        )
+
+    scenes: list[ScriptScene] = [_build_cover(outline, profile)]
+    scenes.append(_build_visual_walkthrough_intro(outline, sources))
+
+    selected_candidates = _select_visual_candidates(candidates, sources, duration)
+    idx = 0
+    scene_no = 1
+    while idx < len(selected_candidates):
+        cand = selected_candidates[idx]
+        next_cand = selected_candidates[idx + 1] if idx + 1 < len(selected_candidates) else None
+        if next_cand is not None and _should_build_comparison(cand, next_cand):
+            scenes.append(_build_comparison_visual_scene(
+                left=cand, right=next_cand, sources=sources, scene_no=scene_no,
+            ))
+            idx += 2
+        else:
+            scenes.append(_build_single_visual_scene(
+                candidate=cand, sources=sources, scene_no=scene_no,
+            ))
+            idx += 1
+        scene_no += 1
+
+    scenes.append(_build_recap(outline, profile, scenes))
+    scenes = _renumber(scenes)
+    selected, plan_report = select_scenes(scenes, duration)
+    selected = _renumber(selected)
+    plan_report.update({
+        "visual_first": True,
+        "source_visual_candidate_count": len(candidates),
+        "selected_source_visual_count": sum(
+            1 for sc in selected if sc.visual_anchor is not None
+        ),
+        "actual_scene_count": len(selected),
+        "actual_estimated_seconds": round(
+            sum(estimated_seconds(s) for s in selected), 1
+        ),
+    })
+    if provider is not None and use_llm_polish:
+        selected = _polish_with_llm(provider, selected, page_text)
+    return selected, plan_report
+
+
+def _build_visual_walkthrough_intro(outline: LessonOutline,
+                                    sources: ChunkedSources) -> ScriptScene:
+    visual_count = sum(1 for c in sources.visual_inventory if c.likely_useful)
+    title = "先看來源視覺"
+    body = f"挑出 {visual_count} 個來源圖片、圖表或截圖候選，接著只看最能說明概念的部分。"
+    return ScriptScene(
+        scene_id="ch_000_sc_002",
+        chapter_id="ch_000",
+        title=title,
+        source_pages=[1],
+        source_refs=["p.1"],
+        narration_text_zh_tw=(
+            "這份文件不是只適合做文字摘要。接下來我們會把重點放在來源畫面："
+            "先看圖、表、截圖或範例，再用旁白解釋它真正要你理解的概念。"
+        ),
+        on_screen_text="看來源，不背卡片",
+        visual_hint="visual walkthrough intro",
+        visual_type=VisualType.sketchbook_card,
+        scene_kind="section_intro",
+        layout_payload={"number": "00", "body": body},
+        importance="medium",
+        estimated_duration_sec=14.0,
+    )
+
+
+def _select_visual_candidates(candidates: list[VisualCandidate],
+                              sources: ChunkedSources,
+                              duration: DurationTarget) -> list[VisualCandidate]:
+    desired = max(4, min(len(candidates), int(max(1.0, duration.target_seconds - 44.0) // 27.0)))
+    page_by_no = {p.page: p for p in sources.pages}
+    ordered = sorted(candidates, key=lambda c: (c.page, -c.salience_score, c.candidate_id))
+    selected: list[VisualCandidate] = []
+    seen_topic_keys: set[str] = set()
+    seen_pages: set[int] = set()
+    for cand in ordered:
+        topic = _visual_topic_title(cand, page_by_no)
+        key = topic[:18]
+        if cand.page in seen_pages:
+            continue
+        if key in seen_topic_keys and len(selected) >= desired // 2:
+            continue
+        selected.append(cand)
+        seen_pages.add(cand.page)
+        seen_topic_keys.add(key)
+        if len(selected) >= desired:
+            return selected
+    for cand in ordered:
+        if cand in selected:
+            continue
+        selected.append(cand)
+        if len(selected) >= desired:
+            break
+    return selected
+
+
+def _visual_topic_title(candidate: VisualCandidate,
+                        page_by_no: dict[int, Any]) -> str:
+    if candidate.nearby_heading:
+        return str(candidate.nearby_heading)[:36]
+    if candidate.nearby_caption:
+        return str(candidate.nearby_caption)[:36]
+    page = page_by_no.get(candidate.page)
+    if page is not None:
+        for heading in getattr(page, "headings", []) or []:
+            h = str(heading).strip()
+            if h:
+                return h[:36]
+        for line in str(getattr(page, "text", "")).splitlines():
+            s = line.strip()
+            if 4 <= len(s) <= 60:
+                return s[:36]
+    return f"第 {candidate.page} 頁視覺重點"
+
+
+def _scene_kind_for_candidate(candidate: VisualCandidate) -> str:
+    role = (candidate.visual_role or "unknown").lower()
+    blob = " ".join([
+        candidate.nearby_heading or "",
+        candidate.nearby_caption or "",
+        candidate.nearby_text or "",
+    ]).lower()
+    if role == "source_table":
+        return "source_table_explainer"
+    if role == "source_screenshot":
+        return "source_screenshot_explainer"
+    if any(term in blob for term in ("步驟", "流程", "三部曲", "設定", "調整", "workflow", "step")):
+        return "process_visual_card"
+    if role in {"source_diagram", "source_chart"}:
+        return "figure_explainer"
+    return "source_visual_explainer"
+
+
+def _screen_callouts(candidate: VisualCandidate) -> list[str]:
+    text = " ".join([
+        candidate.nearby_heading or "",
+        candidate.nearby_caption or "",
+        candidate.nearby_text or "",
+    ])
+    role = candidate.visual_role or "source_visual"
+    callouts: list[str] = []
+    if role == "source_table":
+        callouts.extend(["先看欄位", "找關鍵列"])
+    elif role == "source_screenshot":
+        callouts.extend(["看按鈕位置", "留意設定值"])
+    elif role == "source_chart":
+        callouts.extend(["看分布方向", "找異常區段"])
+    elif role == "source_diagram":
+        callouts.extend(["先看流程", "再看因果"])
+    else:
+        callouts.extend(["觀察主體", "注意差異"])
+    if "光圈" in text or "景深" in text:
+        callouts.append("景深變化")
+    if "快門" in text:
+        callouts.append("動作感")
+    if "ISO" in text or "感光度" in text:
+        callouts.append("雜訊與亮度")
+    if "白平衡" in text:
+        callouts.append("色溫偏移")
+    return callouts[:4]
+
+
+def _source_evidence(candidate: VisualCandidate) -> list[EvidenceSpan]:
+    if not candidate.source_quote:
+        return []
+    return [EvidenceSpan(
+        page=candidate.page,
+        quote=str(candidate.source_quote)[:160],
+        label="來源視覺脈絡",
+        importance="medium",
+    )]
+
+
+def _build_single_visual_scene(*, candidate: VisualCandidate,
+                               sources: ChunkedSources,
+                               scene_no: int) -> ScriptScene:
+    page_by_no = {p.page: p for p in sources.pages}
+    topic = _visual_topic_title(candidate, page_by_no)
+    kind = _scene_kind_for_candidate(candidate)
+    anchor = anchor_from_candidate(candidate, why=f"用第 {candidate.page} 頁來源視覺說明「{topic}」")
+    source_path = candidate_source_path(candidate)
+    callouts = _screen_callouts(candidate)
+    headline = _short_headline(topic)
+    payload = {
+        "headline": headline,
+        "callouts": [{"text": c} for c in callouts],
+        "labels": callouts[:2],
+        "image_path": source_path,
+        "visual_role": candidate.visual_role,
+        "source_page": candidate.page,
+        "caption": candidate.nearby_caption,
+    }
+    screen_plan = {
+        "headline": headline,
+        "callouts": callouts,
+        "labels": callouts[:2],
+        "highlight_regions": [],
+        "max_screen_text": 80,
+        "layout_hint": kind,
+    }
+    narration = _visual_narration(candidate, topic, kind)
+    return ScriptScene(
+        scene_id=f"ch_vis_sc_{scene_no:03d}",
+        chapter_id="ch_vis",
+        title=topic[:40],
+        source_pages=[candidate.page],
+        source_refs=[f"p.{candidate.page}"],
+        narration_text_zh_tw=narration,
+        on_screen_text="\n".join([headline] + callouts[:2]),
+        visual_hint=f"source visual walkthrough: {candidate.visual_role}",
+        visual_type=VisualType.sketchbook_card,
+        scene_kind=kind,
+        facts=[],
+        evidence_spans=_source_evidence(candidate),
+        layout_payload=payload,
+        visual_anchor=anchor,
+        screen_plan=screen_plan,
+        importance="high" if candidate.salience_score >= 4.0 else "medium",
+        estimated_duration_sec=_duration_for_kind(kind),
+    )
+
+
+def _should_build_comparison(left: VisualCandidate,
+                             right: VisualCandidate) -> bool:
+    if right.page - left.page > 2:
+        return False
+    blob = " ".join([
+        left.nearby_heading or "", left.nearby_caption or "", left.nearby_text or "",
+        right.nearby_heading or "", right.nearby_caption or "", right.nearby_text or "",
+    ])
+    return any(term in blob for term in ("比較", "對比", "before", "after", "淺", "深", "高", "低", "冷", "暖"))
+
+
+def _build_comparison_visual_scene(*, left: VisualCandidate,
+                                   right: VisualCandidate,
+                                   sources: ChunkedSources,
+                                   scene_no: int) -> ScriptScene:
+    page_by_no = {p.page: p for p in sources.pages}
+    left_topic = _visual_topic_title(left, page_by_no)
+    right_topic = _visual_topic_title(right, page_by_no)
+    title = _short_headline(left_topic if left_topic == right_topic else f"{left_topic} 比較")
+    left_label = _comparison_label(left, fallback="左邊")
+    right_label = _comparison_label(right, fallback="右邊")
+    payload = {
+        "headline": title,
+        "visuals": [
+            {"image_path": candidate_source_path(left), "label": left_label, "page": left.page},
+            {"image_path": candidate_source_path(right), "label": right_label, "page": right.page},
+        ],
+        "left_label": left_label,
+        "right_label": right_label,
+    }
+    narration = (
+        f"這裡用左右兩個來源例子來看「{left_topic}」。"
+        f"左邊先看{left_label}，右邊再看{right_label}。"
+        "真正要注意的不是文字標籤，而是兩張圖在效果、設定或結果上的差異。"
+    )
+    evidence = _source_evidence(left) + _source_evidence(right)
+    return ScriptScene(
+        scene_id=f"ch_vis_sc_{scene_no:03d}",
+        chapter_id="ch_vis",
+        title=title[:40],
+        source_pages=sorted({left.page, right.page}),
+        source_refs=[f"p.{p}" for p in sorted({left.page, right.page})],
+        narration_text_zh_tw=narration,
+        on_screen_text=f"{title}\n{left_label} / {right_label}",
+        visual_hint="source comparison walkthrough",
+        visual_type=VisualType.sketchbook_card,
+        scene_kind="comparison_visual_card",
+        facts=[],
+        evidence_spans=evidence,
+        layout_payload=payload,
+        visual_anchor=anchor_from_candidate(left, why="comparison left source visual"),
+        screen_plan={
+            "headline": title,
+            "labels": [left_label, right_label],
+            "callouts": ["看差異", "連回設定"],
+            "highlight_regions": [],
+            "max_screen_text": 70,
+            "layout_hint": "comparison_visual_card",
+        },
+        importance="high",
+        estimated_duration_sec=_duration_for_kind("comparison_visual_card"),
+    )
+
+
+def _comparison_label(candidate: VisualCandidate, *, fallback: str) -> str:
+    text = " ".join([
+        candidate.nearby_heading or "",
+        candidate.nearby_caption or "",
+        candidate.nearby_text or "",
+    ])
+    labels = (
+        ("淺", "淺景深"), ("深", "深景深"), ("高", "高設定"),
+        ("低", "低設定"), ("冷", "偏冷"), ("暖", "偏暖"),
+        ("before", "Before"), ("after", "After"),
+    )
+    lower = text.lower()
+    for needle, label in labels:
+        if needle.lower() in lower:
+            return label
+    return fallback
+
+
+def _short_headline(text: str) -> str:
+    text = str(text or "").strip().replace("\n", " ")
+    return text[:18] if len(text) > 18 else text
+
+
+def _visual_narration(candidate: VisualCandidate, topic: str, kind: str) -> str:
+    role = candidate.visual_role or "source visual"
+    heading = candidate.nearby_heading or topic
+    if kind == "source_table_explainer":
+        return (
+            f"這裡先看第 {candidate.page} 頁的表格或資料區。"
+            f"它和「{heading}」有關，重點是先找欄位代表什麼，"
+            "再看哪一列會影響你的判斷。不要急著把整張表背起來。"
+        )
+    if kind == "source_screenshot_explainer":
+        return (
+            f"畫面上這張來源截圖對應「{heading}」。"
+            "你可以先找按鈕、選單或指標的位置，再理解這個設定為什麼會改變結果。"
+        )
+    if kind == "process_visual_card":
+        return (
+            f"這張圖想告訴你「{heading}」的操作順序。"
+            "先看第一步要調整什麼，再看後面的結果如何連動；新手最容易漏掉的是步驟之間的因果。"
+        )
+    if kind == "figure_explainer":
+        return (
+            f"這裡真正要注意的是第 {candidate.page} 頁這張圖的關係。"
+            f"它不是裝飾圖，而是在說明「{heading}」。"
+            "請把視線放在形狀、方向或差異上，再回頭理解文字定義。"
+        )
+    return (
+        f"畫面中這個來源例子來自第 {candidate.page} 頁，主題是「{heading}」。"
+        "先觀察圖中的主體和差異，再聽旁白補上原因；這樣會比只讀文字卡更容易記住。"
+    )
+
+
 # ---------- per-kind scene builders ----------
 
 def _build_cover(outline: LessonOutline, profile: DocProfile
@@ -147,12 +533,26 @@ def _build_cover(outline: LessonOutline, profile: DocProfile
         "subtitle": f"共 {len(outline.chapters)} 段，{outline.target_minutes:.1f} 分鐘",
         "doc_kind": profile.doc_kind.value,
     }
-    narration = (
-        f"歡迎收看這份{eyebrow}。我們會用大約"
-        f"{max(1, round(outline.target_minutes))}分鐘，"
-        "把這份文件最關鍵的時程、條款與注意事項，"
-        "整理成幾張清楚的卡片。"
-    )
+    if profile.document_visual_rich:
+        narration = (
+            f"歡迎收看這份{eyebrow}。我們會用大約"
+            f"{max(1, round(outline.target_minutes))}分鐘，"
+            "直接看來源裡的圖片、圖表、截圖或範例，"
+            "一段一段理解它們想教你的重點。"
+        )
+    elif profile.doc_kind in {DocKind.contract, DocKind.form, DocKind.policy}:
+        narration = (
+            f"歡迎收看這份{eyebrow}。我們會用大約"
+            f"{max(1, round(outline.target_minutes))}分鐘，"
+            "把這份文件最關鍵的時程、條款與注意事項，"
+            "整理成幾張清楚的卡片。"
+        )
+    else:
+        narration = (
+            f"歡迎收看這份{eyebrow}。我們會用大約"
+            f"{max(1, round(outline.target_minutes))}分鐘，"
+            "把來源文件的主題、例子與重點整理成清楚的導讀。"
+        )
     return ScriptScene(
         scene_id="ch_000_sc_001",
         chapter_id="ch_000",
@@ -688,6 +1088,12 @@ def _duration_for_kind(kind: str) -> float:
         "key_number": 18.0,
         "paragraph_card": 22.0,
         "source_crop": 22.0,
+        "source_visual_explainer": 26.0,
+        "figure_explainer": 28.0,
+        "comparison_visual_card": 28.0,
+        "process_visual_card": 28.0,
+        "source_table_explainer": 28.0,
+        "source_screenshot_explainer": 28.0,
     }.get(kind, 22.0)
 
 

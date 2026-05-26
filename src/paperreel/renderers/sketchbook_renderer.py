@@ -160,6 +160,18 @@ class SketchbookRenderer:
             return self._source_crop(scene.title, payload, scene)
         if kind == "key_number":
             return self._key_number(scene.title, payload, scene)
+        if kind in ("source_visual_explainer", "figure_explainer"):
+            return self._source_visual_explainer(scene.title, payload, scene)
+        if kind == "comparison_visual_card":
+            return self._comparison_visual_card(scene.title, payload, scene)
+        if kind == "process_visual_card":
+            return self._process_visual_card(scene.title, payload, scene)
+        if kind == "source_table_explainer":
+            return self._source_table_explainer(scene.title, payload, scene)
+        if kind == "source_screenshot_explainer":
+            return self._source_visual_explainer(
+                scene.title, payload, scene, screenshot=True,
+            )
         return self._paragraph_card(scene.title, payload, scene)
 
     # ---------- card kinds ----------
@@ -710,6 +722,248 @@ class SketchbookRenderer:
             y += context_font.size + 10
         return img
 
+    def _source_visual_explainer(self, title: str, payload: dict,
+                                 scene: Scene, *, screenshot: bool = False
+                                 ) -> Image.Image:
+        img = self._base()
+        draw = ImageDraw.Draw(img)
+        margin = 56
+        title_font = _load_font(self.font_path, max(34, self.h // 24))
+        callout_font = _load_font(self.font_path, max(24, self.h // 36))
+        small_font = _load_font(self.font_path, max(20, self.h // 48))
+
+        plan = self._screen_plan(scene, payload)
+        headline = str(plan.get("headline") or payload.get("headline") or title)[:34]
+        draw.text((margin, 52), headline, fill=self.fg, font=title_font)
+        draw.rectangle([(margin, 52 + title_font.size + 10),
+                        (margin + 180, 52 + title_font.size + 16)],
+                       fill=self.accent)
+
+        top = 126
+        bottom = self._content_bottom() + 38
+        visual_w = int(self.w * 0.69)
+        visual_box = (margin, top, margin + visual_w, bottom)
+        src = self._visual_source_path(scene, payload)
+        pasted = self._paste_source_image(draw, img, src, visual_box)
+        if pasted is None:
+            return self._source_quote_card(title, payload, scene)
+
+        self._draw_highlights(draw, pasted, plan.get("highlight_regions") or [])
+        role = str(payload.get("visual_role") or getattr(scene.visual_anchor, "visual_role", "") or "source")
+        tag = "來源截圖" if screenshot else _role_label(role)
+        draw.text((visual_box[0], visual_box[3] + 10), tag,
+                  fill=_darker(self.fg, 0.58), font=small_font)
+
+        right_x = visual_box[2] + 34
+        right_w = self.w - margin - right_x
+        callouts = self._callout_texts(plan, payload)[:4]
+        if not callouts:
+            callouts = ["看主體", "找差異"]
+        y = top + 8
+        for i, text in enumerate(callouts, start=1):
+            box_h = max(58, callout_font.size + 26)
+            draw.rounded_rectangle(
+                [(right_x, y), (right_x + right_w, y + box_h)],
+                radius=8, fill=_lighter(self.accent, 0.82),
+                outline=_lighter(self.accent, 0.35), width=2,
+            )
+            draw.text((right_x + 16, y + 12), f"{i}", fill=self.accent,
+                      font=callout_font)
+            for li, line in enumerate(_wrap(str(text), max_chars=10)[:2]):
+                draw.text((right_x + 54, y + 12 + li * (callout_font.size + 4)),
+                          line, fill=self.fg, font=callout_font)
+            y += box_h + 16
+        page = scene.source_pages[0] if scene.source_pages else payload.get("source_page")
+        if page:
+            draw.text((right_x, min(bottom - 24, y + 4)), f"source p.{page}",
+                      fill=_darker(self.fg, 0.58), font=small_font)
+        return img
+
+    def _comparison_visual_card(self, title: str, payload: dict,
+                                scene: Scene) -> Image.Image:
+        img = self._base()
+        draw = ImageDraw.Draw(img)
+        margin = 60
+        title_font = _load_font(self.font_path, max(34, self.h // 24))
+        label_font = _load_font(self.font_path, max(26, self.h // 34))
+        small_font = _load_font(self.font_path, max(20, self.h // 48))
+        plan = self._screen_plan(scene, payload)
+        headline = str(plan.get("headline") or payload.get("headline") or title)[:34]
+        draw.text((margin, 52), headline, fill=self.fg, font=title_font)
+        draw.rectangle([(margin, 52 + title_font.size + 10),
+                        (margin + 180, 52 + title_font.size + 16)],
+                       fill=self.accent)
+
+        visuals = list(payload.get("visuals") or [])[:2]
+        while len(visuals) < 2:
+            visuals.append({"image_path": self._visual_source_path(scene, payload),
+                            "label": "來源圖"})
+        gap = 34
+        top = 132
+        box_w = (self.w - margin * 2 - gap) // 2
+        box_h = self._content_bottom() - top - 4
+        for idx, item in enumerate(visuals[:2]):
+            x = margin + idx * (box_w + gap)
+            box = (x, top, x + box_w, top + box_h)
+            src = item.get("image_path") if isinstance(item, dict) else None
+            self._paste_source_image(draw, img, src, box, allow_placeholder=True)
+            label = str(item.get("label") or ("左邊" if idx == 0 else "右邊")) if isinstance(item, dict) else "來源圖"
+            draw.rounded_rectangle(
+                [(x, top + box_h + 12), (x + box_w, top + box_h + 58)],
+                radius=8, fill=_lighter(self.accent, 0.82),
+            )
+            tw = _text_width(draw, label[:18], label_font)
+            draw.text((x + (box_w - tw) // 2, top + box_h + 20),
+                      label[:18], fill=self.fg, font=label_font)
+        pages = ", ".join(f"p.{p}" for p in scene.source_pages[:4])
+        draw.text((margin, self._content_bottom() + 56), pages,
+                  fill=_darker(self.fg, 0.58), font=small_font)
+        return img
+
+    def _process_visual_card(self, title: str, payload: dict,
+                             scene: Scene) -> Image.Image:
+        img = self._source_visual_explainer(title, payload, scene)
+        draw = ImageDraw.Draw(img)
+        plan = self._screen_plan(scene, payload)
+        steps = self._callout_texts(plan, payload)[:5] or ["看起點", "調設定", "確認結果"]
+        margin = 56
+        y = self._content_bottom() + 4
+        step_font = _load_font(self.font_path, max(20, self.h // 48))
+        x = margin
+        usable_w = self.w - margin * 2
+        step_w = max(120, usable_w // max(1, len(steps)) - 10)
+        for i, step in enumerate(steps, start=1):
+            draw.rounded_rectangle(
+                [(x, y), (x + step_w, y + 44)], radius=8,
+                fill=_lighter(self.accent, 0.84), outline=_lighter(self.accent, 0.38),
+            )
+            draw.text((x + 12, y + 10), f"{i}. {str(step)[:8]}",
+                      fill=self.fg, font=step_font)
+            x += step_w + 10
+        return img
+
+    def _source_table_explainer(self, title: str, payload: dict,
+                                scene: Scene) -> Image.Image:
+        rows = list(payload.get("rows") or [])[:6]
+        if not rows:
+            return self._source_visual_explainer(title, payload, scene)
+        img = self._base()
+        draw = ImageDraw.Draw(img)
+        margin = 72
+        title_font = _load_font(self.font_path, max(36, self.h // 24))
+        cell_font = _load_font(self.font_path, max(24, self.h // 38))
+        headline = str(payload.get("headline") or title)[:34]
+        draw.text((margin, 58), headline, fill=self.fg, font=title_font)
+        top = 138
+        table_w = self.w - margin * 2
+        row_h = max(58, (self._content_bottom() - top) // max(2, len(rows) + 1))
+        col1 = int(table_w * 0.62)
+        draw.rectangle([(margin, top), (margin + table_w, top + row_h)],
+                       fill=_lighter(self.accent, 0.75))
+        draw.text((margin + 18, top + 16), "條件 / 欄位", fill=self.fg, font=cell_font)
+        draw.text((margin + col1 + 18, top + 16), "重點", fill=self.fg, font=cell_font)
+        y = top + row_h
+        for idx, row in enumerate(rows):
+            fill = (255, 255, 255) if idx % 2 == 0 else _lighter(self.bg, 0.04)
+            draw.rectangle([(margin, y), (margin + table_w, y + row_h)],
+                           fill=fill, outline=(220, 225, 230), width=1)
+            condition = str(row.get("condition") or row.get("label") or row.get("text") or "")
+            value = str(row.get("value") or row.get("page") or "")
+            for li, line in enumerate(_wrap(condition, max_chars=22)[:2]):
+                draw.text((margin + 18, y + 12 + li * (cell_font.size + 2)),
+                          line, fill=self.fg, font=cell_font)
+            for li, line in enumerate(_wrap(value, max_chars=12)[:2]):
+                draw.text((margin + col1 + 18, y + 12 + li * (cell_font.size + 2)),
+                          line, fill=_darker(self.accent), font=cell_font)
+            y += row_h
+        return img
+
+    def _screen_plan(self, scene: Scene, payload: dict) -> dict:
+        if scene.screen_plan is None:
+            return {}
+        try:
+            return scene.screen_plan.model_dump(mode="json")
+        except AttributeError:
+            return dict(scene.screen_plan)
+
+    def _visual_source_path(self, scene: Scene, payload: dict) -> str | None:
+        for key in ("image_path", "crop_path", "page_render_path"):
+            if payload.get(key):
+                return str(payload[key])
+        anchor = scene.visual_anchor
+        if anchor is not None:
+            for attr in ("crop_path", "image_path", "page_render_path"):
+                val = getattr(anchor, attr, None)
+                if val:
+                    return str(val)
+        if scene.visual_source_paths:
+            return scene.visual_source_paths[0]
+        return None
+
+    def _paste_source_image(self, draw: ImageDraw.ImageDraw, canvas: Image.Image,
+                            src: str | None, box: tuple[int, int, int, int],
+                            *, allow_placeholder: bool = False
+                            ) -> tuple[int, int, int, int] | None:
+        x0, y0, x1, y1 = box
+        draw.rounded_rectangle([(x0 - 2, y0 - 2), (x1 + 2, y1 + 2)],
+                               radius=8, fill=(255, 255, 255),
+                               outline=(204, 213, 225), width=2)
+        try:
+            inset = Image.open(src).convert("RGB") if src else None
+        except Exception:
+            inset = None
+        if inset is None:
+            if not allow_placeholder:
+                return None
+            self._placeholder(draw, "來源圖無法載入", start_y=y0 + 40, margin=x0 + 20)
+            return None
+        inset.thumbnail((x1 - x0 - 14, y1 - y0 - 14))
+        ox = x0 + ((x1 - x0) - inset.width) // 2
+        oy = y0 + ((y1 - y0) - inset.height) // 2
+        canvas.paste(inset, (ox, oy))
+        return (ox, oy, ox + inset.width, oy + inset.height)
+
+    def _draw_highlights(self, draw: ImageDraw.ImageDraw,
+                         pasted_box: tuple[int, int, int, int],
+                         regions: list[dict]) -> None:
+        if not regions:
+            return
+        px0, py0, px1, py1 = pasted_box
+        pw = max(1, px1 - px0)
+        ph = max(1, py1 - py0)
+        for region in regions[:4]:
+            bbox = region.get("bbox") if isinstance(region, dict) else None
+            if not bbox or len(bbox) != 4:
+                continue
+            x0, y0, x1, y1 = [float(v) for v in bbox]
+            if max(x0, y0, x1, y1) <= 1.0:
+                rect = (px0 + x0 * pw, py0 + y0 * ph,
+                        px0 + x1 * pw, py0 + y1 * ph)
+            else:
+                rect = (px0 + x0, py0 + y0, px0 + x1, py0 + y1)
+            draw.rectangle(rect, outline=self.accent, width=5)
+
+    def _callout_texts(self, plan: dict, payload: dict) -> list[str]:
+        out: list[str] = []
+        for item in plan.get("callouts") or []:
+            out.append(str(item))
+        for item in payload.get("callouts") or []:
+            if isinstance(item, dict):
+                out.append(str(item.get("text") or item.get("label") or ""))
+            else:
+                out.append(str(item))
+        for item in plan.get("labels") or []:
+            out.append(str(item))
+        seen: set[str] = set()
+        unique: list[str] = []
+        for item in out:
+            item = item.strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return unique
+
     def _source_quote_card(self, title: str, payload: dict, scene: Scene
                            ) -> Image.Image:
         """Render source evidence as text when no PDF crop is available."""
@@ -866,6 +1120,17 @@ class SketchbookRenderer:
         if scene.scene_kind:
             bits.append(scene.scene_kind)
         return "  ·  ".join(bits)
+
+
+def _role_label(role: str) -> str:
+    return {
+        "source_photo": "來源照片",
+        "source_diagram": "來源圖解",
+        "source_table": "來源表格",
+        "source_screenshot": "來源截圖",
+        "source_chart": "來源圖表",
+        "source_page_crop": "來源頁面",
+    }.get(role, "來源視覺")
 
 
 def _split_narration(text: str, *, max_items: int = 5) -> list[str]:

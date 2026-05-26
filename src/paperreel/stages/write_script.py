@@ -190,7 +190,7 @@ def _run_sketchbook(*, project_root: str | Path, db: StateDB, config: dict,
     )
 
     input_hash = hash_inputs(
-        "sketchbook_script_v1",
+        "sketchbook_script_v2_visual_first",
         sources.pdf_sha256,
         outline.model_dump(mode="json"),
         profile.model_dump(mode="json"),

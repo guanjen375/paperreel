@@ -90,6 +90,23 @@ _MONEY_PATTERN = re.compile(
 
 # Storyboard skeletons per doc_kind. Each entry is a scene_kind tag the
 # script writer + renderer understand. Cover/recap always book-end.
+_VISUAL_STORYBOARD = [
+    "cover", "section_intro", "source_visual_explainer",
+    "figure_explainer", "process_visual_card", "comparison_visual_card",
+    "source_table_explainer", "source_screenshot_explainer",
+    "checklist", "recap_card",
+]
+
+
+_VISUAL_TUTORIAL_TERMS = (
+    "步驟", "技巧", "設定", "模式", "範例", "實戰", "如何",
+    "操作", "練習", "示意", "對比", "比較", "畫面", "截圖",
+    "光圈", "快門", "iso", "感光度", "曝光", "景深", "直方圖",
+    "白平衡", "對焦", "測光", "鏡頭", "camera", "photo",
+    "tutorial", "workflow", "example", "screenshot",
+)
+
+
 _STORYBOARDS: dict[DocKind, list[str]] = {
     DocKind.contract: [
         "cover", "section_intro", "deadline_timeline", "penalty_table",
@@ -136,6 +153,12 @@ class _Signals:
     percent_hits: int
     money_hits: int
     page_count: int
+    visual_tutorial_hits: int
+    useful_visuals: int
+    decorative_visuals: int
+    large_visual_pages: int
+    source_visuals_available: int
+    visual_rich_score: float
 
 
 def _collect_signals(sources: ChunkedSources) -> _Signals:
@@ -150,7 +173,42 @@ def _collect_signals(sources: ChunkedSources) -> _Signals:
     page_count = max(1, sources.page_count)
     avg_cjk = sources.cjk_char_count / page_count
     headings_per_page = sources.heading_count / page_count
-    images_per_page = len(sources.images) / page_count
+    image_count = len(sources.images) or int(getattr(sources, "image_count", 0) or 0)
+    images_per_page = image_count / page_count
+    tutorial_hits = sum(lower.count(t.lower()) for t in _VISUAL_TUTORIAL_TERMS)
+    inventory = list(getattr(sources, "visual_inventory", []) or [])
+    useful_visuals = sum(
+        1 for c in inventory
+        if getattr(c, "likely_useful", False)
+        and getattr(c, "visual_role", "unknown") not in {"decorative", "logo", "seal", "signature"}
+    )
+    decorative_visuals = sum(
+        1 for c in inventory
+        if getattr(c, "is_decorative", False)
+        or getattr(c, "visual_role", "unknown") in {"decorative", "logo", "seal", "signature"}
+    )
+    large_visual_pages = len({
+        int(getattr(c, "page", 0) or 0) for c in inventory
+        if getattr(c, "likely_useful", False)
+        and float(getattr(c, "page_area_ratio", 0.0) or 0.0) >= 0.12
+    })
+    # Old chunked_sources.json files have no visual_inventory. Use the
+    # embedded image count as a weaker fallback so classification still
+    # improves after only a model load.
+    if not inventory and image_count:
+        useful_visuals = image_count
+        large_visual_pages = min(page_count, image_count)
+    source_visuals_available = useful_visuals
+    visual_rich_score = _visual_rich_score(
+        useful_visuals=useful_visuals,
+        decorative_visuals=decorative_visuals,
+        large_visual_pages=large_visual_pages,
+        page_count=page_count,
+        images_per_page=images_per_page,
+        avg_cjk_per_page=avg_cjk,
+        tutorial_hits=tutorial_hits,
+        headings_per_page=headings_per_page,
+    )
     return _Signals(
         keyword_hits=keyword_hits,
         avg_cjk_per_page=avg_cjk,
@@ -160,7 +218,43 @@ def _collect_signals(sources: ChunkedSources) -> _Signals:
         percent_hits=percent_hits,
         money_hits=money_hits,
         page_count=page_count,
+        visual_tutorial_hits=tutorial_hits,
+        useful_visuals=useful_visuals,
+        decorative_visuals=decorative_visuals,
+        large_visual_pages=large_visual_pages,
+        source_visuals_available=source_visuals_available,
+        visual_rich_score=visual_rich_score,
     )
+
+
+def _visual_rich_score(*, useful_visuals: int, decorative_visuals: int,
+                       large_visual_pages: int, page_count: int,
+                       images_per_page: float, avg_cjk_per_page: float,
+                       tutorial_hits: int, headings_per_page: float) -> float:
+    score = 0.0
+    useful_per_page = useful_visuals / max(1, page_count)
+    large_page_ratio = large_visual_pages / max(1, page_count)
+    if useful_visuals >= 3:
+        score += 1.0
+    if useful_per_page >= 0.20:
+        score += 1.5
+    if useful_per_page >= 0.45:
+        score += 1.0
+    if large_page_ratio >= 0.18:
+        score += 1.5
+    if large_page_ratio >= 0.40:
+        score += 1.0
+    if images_per_page >= 0.45:
+        score += 0.8
+    if avg_cjk_per_page < 550 and (useful_per_page >= 0.15 or headings_per_page >= 0.6):
+        score += 0.8
+    if tutorial_hits >= 4:
+        score += 0.8
+    if tutorial_hits >= 10:
+        score += 0.8
+    if decorative_visuals > useful_visuals and useful_visuals < 3:
+        score -= 1.5
+    return round(max(0.0, score), 3)
 
 
 def _slides_score(sig: _Signals) -> float:
@@ -208,6 +302,17 @@ def classify(sources: ChunkedSources) -> DocProfile:
         scores[kind] = hits / max(1.0, sig.page_count ** 0.5)
     scores[DocKind.slides] = _slides_score(sig)
     scores[DocKind.contract] += _contract_bonus(sig)
+    visual_family_blocked = (
+        scores[DocKind.contract] >= 2.0
+        or scores[DocKind.form] >= 2.0
+        or scores[DocKind.policy] >= 2.0
+    )
+    if not visual_family_blocked:
+        scores[DocKind.manual] += min(3.0, sig.visual_tutorial_hits / max(2.0, sig.page_count ** 0.5) * 0.8)
+        if sig.visual_rich_score >= 3.0 and sig.visual_tutorial_hits >= 2:
+            scores[DocKind.manual] += 1.5
+        if sig.visual_rich_score >= 3.0 and sig.avg_cjk_per_page < 300:
+            scores[DocKind.slides] += 1.0
     # Reports lean on percent + money but in a non-obligation way; if
     # contract keywords aren't present, treat heavy numbers as report.
     if scores[DocKind.contract] < 1.0 and (sig.percent_hits + sig.money_hits) >= 5:
@@ -229,8 +334,17 @@ def classify(sources: ChunkedSources) -> DocProfile:
                 "deadline_hits": sig.deadline_hits,
                 "percent_hits": sig.percent_hits,
                 "money_hits": sig.money_hits,
+                "visual_tutorial_hits": sig.visual_tutorial_hits,
+                "useful_visuals": sig.useful_visuals,
+                "decorative_visuals": sig.decorative_visuals,
+                "large_visual_pages": sig.large_visual_pages,
+                "visual_rich_score": sig.visual_rich_score,
             },
             suggested_storyboard=_STORYBOARDS[DocKind.unknown],
+            document_visual_rich=False,
+            visual_tutorial=False,
+            visual_rich_score=sig.visual_rich_score,
+            source_visuals_available=sig.source_visuals_available,
         )
     top_kind, top_score = ranked[0]
     second_score = ranked[1][1] if len(ranked) > 1 else 0.0
@@ -245,10 +359,24 @@ def classify(sources: ChunkedSources) -> DocProfile:
         if len(ranked) > 1
         else f"top={top_kind.value}({top_score:.2f})"
     )
+    document_visual_rich = (
+        sig.visual_rich_score >= 3.0
+        and sig.source_visuals_available >= 2
+        and top_kind not in {DocKind.contract, DocKind.form, DocKind.policy}
+    )
+    visual_tutorial = bool(
+        document_visual_rich
+        and (top_kind in {DocKind.manual, DocKind.slides} or sig.visual_tutorial_hits >= 2)
+    )
+    storyboard = (
+        list(_VISUAL_STORYBOARD)
+        if document_visual_rich
+        else _STORYBOARDS[top_kind]
+    )
     return DocProfile(
         doc_kind=top_kind,
         confidence=round(confidence, 3),
-        rationale=rationale,
+        rationale=rationale + (f" visual_rich={sig.visual_rich_score:.2f}" if document_visual_rich else ""),
         keyword_hits={k.value: v for k, v in sig.keyword_hits.items()},
         structural_hits={
             "avg_cjk_per_page": round(sig.avg_cjk_per_page, 1),
@@ -257,8 +385,17 @@ def classify(sources: ChunkedSources) -> DocProfile:
             "deadline_hits": sig.deadline_hits,
             "percent_hits": sig.percent_hits,
             "money_hits": sig.money_hits,
+            "visual_tutorial_hits": sig.visual_tutorial_hits,
+            "useful_visuals": sig.useful_visuals,
+            "decorative_visuals": sig.decorative_visuals,
+            "large_visual_pages": sig.large_visual_pages,
+            "visual_rich_score": sig.visual_rich_score,
         },
-        suggested_storyboard=_STORYBOARDS[top_kind],
+        suggested_storyboard=storyboard,
+        document_visual_rich=document_visual_rich,
+        visual_tutorial=visual_tutorial,
+        visual_rich_score=sig.visual_rich_score,
+        source_visuals_available=sig.source_visuals_available,
     )
 
 

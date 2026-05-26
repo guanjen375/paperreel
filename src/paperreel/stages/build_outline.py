@@ -79,7 +79,7 @@ def run(*, project_root: str | Path, project_name: str, db: StateDB, config: dic
         plan_chars_per_minute = plan.chars_per_minute
 
     input_hash = hash_inputs(
-        "plan_v2", sources.pdf_sha256, plan_target_minutes,
+        "plan_v3_visual_profile", sources.pdf_sha256, plan_target_minutes,
         llm_cfg.get("provider"), llm_cfg.get("model"),
         sketchbook_mode, depth,
     )
@@ -145,6 +145,7 @@ def run(*, project_root: str | Path, project_name: str, db: StateDB, config: dic
                 sources=sources,
                 target_minutes=plan_target_minutes,
                 project=project_name,
+                profile=profile,
             )
         atomic_write_json(p["outline"], outline.model_dump(mode="json"))
         db.register_artifact(p["outline"], stage="plan", media_type="application/json")
@@ -164,12 +165,19 @@ def _get_attr(obj, name: str, default=None):
 
 
 def _heuristic_outline(*, sources: ChunkedSources, target_minutes: float,
-                       project: str) -> LessonOutline:
+                       project: str, profile: DocProfile | None = None) -> LessonOutline:
     """Build a deterministic outline when no local LLM is available.
 
     The sketchbook script builder does the factual selection later, so
     this outline only needs stable chapter page ranges and short titles.
+    For image-rich tutorials/manuals we derive a wider topic map from
+    visual anchors instead of collapsing hundreds of pages into a few
+    dense text chapters.
     """
+    if profile is not None and profile.document_visual_rich:
+        return _visual_heuristic_outline(
+            sources=sources, target_minutes=target_minutes, project=project,
+        )
     chunks = list(sources.chunks)
     if not chunks:
         joined = "\n".join(pg.text for pg in sources.pages)
@@ -210,6 +218,68 @@ def _heuristic_outline(*, sources: ChunkedSources, target_minutes: float,
         "language": "zh-TW",
         "target_minutes": float(target_minutes),
         "rationale": "deterministic explainer outline from PDF chunks",
+        "chapters": chapters,
+    })
+
+
+def _visual_heuristic_outline(*, sources: ChunkedSources, target_minutes: float,
+                              project: str) -> LessonOutline:
+    useful = [
+        c for c in sources.visual_inventory
+        if c.likely_useful
+        and c.visual_role not in {"decorative", "logo", "seal", "signature"}
+    ]
+    useful.sort(key=lambda c: (c.page, -c.salience_score, c.candidate_id))
+    page_by_no = {p.page: p for p in sources.pages}
+    desired = max(4, min(48, round(max(1.0, target_minutes) * 2.2)))
+
+    anchors: list[int] = []
+    seen_topic_keys: set[str] = set()
+    for cand in useful:
+        page = page_by_no.get(cand.page)
+        if page is None:
+            continue
+        title = _outline_title(
+            page.text, list(page.headings),
+            fallback=cand.nearby_heading or f"第 {cand.page} 頁重點",
+        )
+        key = title[:18]
+        if key in seen_topic_keys and len(anchors) >= desired // 2:
+            continue
+        seen_topic_keys.add(key)
+        anchors.append(cand.page)
+        if len(anchors) >= desired:
+            break
+
+    if len(anchors) < desired:
+        step = max(1, sources.page_count // max(1, desired))
+        for pno in range(1, sources.page_count + 1, step):
+            if pno not in anchors:
+                anchors.append(pno)
+            if len(anchors) >= desired:
+                break
+
+    anchors = sorted(dict.fromkeys(anchors)) or [1]
+    chapters = []
+    for idx, page_no in enumerate(anchors, start=1):
+        page = page_by_no.get(page_no)
+        text = page.text if page else ""
+        headings = list(page.headings) if page else []
+        title = _outline_title(text, headings, fallback=f"第 {idx} 個視覺重點")
+        key_points = _outline_key_points(text, max_items=2)
+        chapters.append({
+            "chapter_id": f"ch_{idx:03d}",
+            "title": title,
+            "source_pages": [page_no],
+            "target_minutes": round(float(target_minutes) / max(1, len(anchors)), 2),
+            "key_points": key_points,
+            "recap": False,
+        })
+    return LessonOutline.model_validate({
+        "project": project,
+        "language": "zh-TW",
+        "target_minutes": float(target_minutes),
+        "rationale": "deterministic visual-rich outline from source visual anchors",
         "chapters": chapters,
     })
 

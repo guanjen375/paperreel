@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from paperreel.models import (EvidenceSpan, Fact, Scene, SceneStatus,
-                                VisualType)
+                                ScreenPlan, VisualAnchor, VisualType)
 from paperreel.renderers.sketchbook_renderer import SketchbookRenderer
 
 
@@ -242,3 +242,73 @@ def test_long_checklist_rows_use_dynamic_spacing(tmp_path: Path) -> None:
         out,
     )
     _assert_card(out, (1280, 720))
+
+def test_source_visual_explainer_renders_large_source_visual(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    Image.new("RGB", (900, 520), color=(220, 40, 40)).save(source)
+    out = tmp_path / "source_visual.png"
+    scene = _scene(
+        "source_visual_explainer",
+        source_pages=[3],
+        visual_source_paths=[str(source)],
+        visual_anchor=VisualAnchor(
+            page=3, image_path=str(source), visual_role="source_photo",
+            caption="光圈範例", nearby_heading="光圈與景深",
+            why_this_visual="example photo",
+        ),
+        screen_plan=ScreenPlan(
+            headline="光圈與景深",
+            callouts=["看主體", "景深變化", "背景模糊"],
+            labels=["景深變化"],
+            max_screen_text=60,
+            layout_hint="source_visual_explainer",
+        ),
+        layout_payload={
+            "headline": "光圈與景深",
+            "image_path": str(source),
+            "callouts": [{"text": "看主體"}, {"text": "背景模糊"}],
+            "visual_role": "source_photo",
+        },
+    )
+    _renderer().render(scene, out)
+    _assert_card(out, (1280, 720))
+    img = Image.open(out).convert("RGB")
+    red_pixels = sum(
+        1 for r, g, b in img.getdata()
+        if r > 170 and g < 90 and b < 90
+    )
+    assert red_pixels > 180_000
+
+
+def test_comparison_visual_card_renders_two_visuals_with_labels(tmp_path: Path) -> None:
+    left = tmp_path / "left.png"
+    right = tmp_path / "right.png"
+    Image.new("RGB", (640, 420), color=(40, 180, 60)).save(left)
+    Image.new("RGB", (640, 420), color=(40, 80, 220)).save(right)
+    out = tmp_path / "comparison.png"
+    scene = _scene(
+        "comparison_visual_card",
+        source_pages=[4, 5],
+        visual_anchor=VisualAnchor(
+            page=4, image_path=str(left), visual_role="source_photo",
+        ),
+        screen_plan=ScreenPlan(
+            headline="景深比較", labels=["淺景深", "深景深"],
+            callouts=["看差異"], layout_hint="comparison_visual_card",
+        ),
+        layout_payload={
+            "headline": "景深比較",
+            "visuals": [
+                {"image_path": str(left), "label": "淺景深", "page": 4},
+                {"image_path": str(right), "label": "深景深", "page": 5},
+            ],
+        },
+    )
+    _renderer().render(scene, out)
+    _assert_card(out, (1280, 720))
+    img = Image.open(out).convert("RGB")
+    green_pixels = sum(1 for r, g, b in img.getdata() if g > 140 and r < 90 and b < 110)
+    blue_pixels = sum(1 for r, g, b in img.getdata() if b > 160 and r < 90 and g < 130)
+    assert green_pixels > 90_000
+    assert blue_pixels > 90_000
+

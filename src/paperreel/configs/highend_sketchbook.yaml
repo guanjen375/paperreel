@@ -8,8 +8,10 @@
 #   paperreel <pdf> --project ./runs/my_video \
 #       --target-minutes 5 --config highend_sketchbook
 #
-# Before you run, pull the model:
-#   ollama pull llama3.3:70b-instruct
+# Before you run, pull one stronger local model, for example:
+#   ollama pull qwen3:30b
+# or:
+#   ollama pull qwen2.5:32b-instruct
 project:
   style: "sketchbook"
   depth: "standard"
@@ -35,9 +37,9 @@ doc_explainer:
 
 llm:
   provider: "ollama"
-  model: "llama3.3:70b-instruct"
-  num_ctx: 16384
-  max_chunk_chars: 12000
+  model: "qwen3:30b"
+  num_ctx: 32768
+  max_chunk_chars: 16000
 
 tts:
   provider: "xtts"

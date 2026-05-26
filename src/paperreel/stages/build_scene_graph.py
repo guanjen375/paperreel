@@ -37,6 +37,16 @@ def _is_sketchbook(config: dict) -> bool:
     return str(style).lower() in ("sketchbook", "document_explainer")
 
 
+def _anchor_source_paths(anchor) -> list[str]:
+    if anchor is None:
+        return []
+    for attr in ("crop_path", "image_path", "page_render_path"):
+        val = getattr(anchor, attr, None)
+        if val:
+            return [str(val)]
+    return []
+
+
 def run(*, project_root: str | Path, project_name: str,
         pdf_name: str, db: StateDB, config: dict,
         force: bool = False) -> SceneGraph:
@@ -49,7 +59,7 @@ def run(*, project_root: str | Path, project_name: str,
     sketchbook = _is_sketchbook(config)
 
     input_hash = hash_inputs(
-        "scenegraph_v2",
+        "scenegraph_v3_visual_anchor",
         script.model_dump(mode="json"),
         voice, sample_rate, sketchbook,
     )
@@ -82,6 +92,7 @@ def run(*, project_root: str | Path, project_name: str,
                 estimated_duration_sec=ss.estimated_duration_sec,
                 input_hash=h,
                 status=SceneStatus.pending,
+                visual_source_paths=_anchor_source_paths(ss.visual_anchor),
                 # Carry sketchbook fields through verbatim. Default mode
                 # leaves these empty, which is what the renderer expects.
                 scene_kind=ss.scene_kind,
@@ -89,6 +100,8 @@ def run(*, project_root: str | Path, project_name: str,
                 evidence_spans=list(ss.evidence_spans),
                 layout_payload=dict(ss.layout_payload),
                 importance=ss.importance,
+                visual_anchor=ss.visual_anchor,
+                screen_plan=ss.screen_plan,
             ))
             # Recap insertion only applies to default mode — sketchbook
             # already places its own recap_card scene at the end.

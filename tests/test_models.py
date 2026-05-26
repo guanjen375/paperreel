@@ -68,3 +68,44 @@ def test_script_scene_accepts_string_visual_type() -> None:
                      visual_type="recap",
                      estimated_duration_sec=30.0)
     assert ss.visual_type == VisualType.recap
+
+def test_old_scene_artifact_without_visual_fields_loads() -> None:
+    old_blob = {
+        "scene_id": "old",
+        "chapter_id": "ch_001",
+        "title": "舊場景",
+        "source_pages": [1],
+        "narration_text_zh_tw": "舊旁白",
+        "visual_type": "sketchbook_card",
+        "estimated_duration_sec": 20.0,
+        "input_hash": "oldhash",
+        "scene_kind": "paragraph_card",
+    }
+    loaded = Scene.model_validate(old_blob)
+    assert loaded.visual_anchor is None
+    assert loaded.screen_plan is None
+    assert loaded.visual_source_paths == []
+
+
+def test_visual_first_scene_fields_round_trip() -> None:
+    s = _make_scene(
+        visual_type=VisualType.sketchbook_card,
+        scene_kind="source_visual_explainer",
+        visual_anchor={
+            "page": 2,
+            "image_path": "/tmp/source.png",
+            "visual_role": "source_photo",
+            "why_this_visual": "example",
+        },
+        screen_plan={
+            "headline": "看來源圖",
+            "callouts": ["看主體", "找差異"],
+            "layout_hint": "source_visual_explainer",
+        },
+    )
+    loaded = Scene.model_validate(json.loads(s.model_dump_json()))
+    assert loaded.visual_anchor is not None
+    assert loaded.visual_anchor.page == 2
+    assert loaded.screen_plan is not None
+    assert loaded.screen_plan.callouts == ["看主體", "找差異"]
+

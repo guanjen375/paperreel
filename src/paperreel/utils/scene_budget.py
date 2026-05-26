@@ -38,6 +38,12 @@ _SECONDS_BY_KIND: dict[str, float] = {
     "paragraph_card": 22.0,
     "source_crop": 22.0,
     "key_number": 18.0,
+    "source_visual_explainer": 26.0,
+    "figure_explainer": 28.0,
+    "comparison_visual_card": 28.0,
+    "process_visual_card": 28.0,
+    "source_table_explainer": 28.0,
+    "source_screenshot_explainer": 28.0,
 }
 
 _DEFAULT_SCENE_SECONDS = 22.0
@@ -54,6 +60,12 @@ _KIND_PRIORITY = {
     "checklist": 80,
     "key_number": 75,
     "do_dont": 70,
+    "source_visual_explainer": 86,
+    "figure_explainer": 84,
+    "comparison_visual_card": 83,
+    "process_visual_card": 82,
+    "source_table_explainer": 82,
+    "source_screenshot_explainer": 82,
     "source_crop": 60,
     "section_intro": 55,
     "paragraph_card": 40,

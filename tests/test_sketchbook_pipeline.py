@@ -13,11 +13,14 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 import pytest
+from PIL import Image
 
 from paperreel.config import load_config
 from paperreel.io_utils import read_json
-from paperreel.models import (DocKind, DocProfile, ScriptScene, SceneGraph,
-                                VisualType)
+from paperreel.models import (ChunkedSources, DocKind, DocProfile, PdfChunk,
+                                PdfPage, Scene, SceneGraph, SceneStatus,
+                                ScreenPlan, ScriptScene, VisualAnchor,
+                                VisualCandidate, VisualType)
 from paperreel.stages import (build_outline, build_scene_graph, ingest_pdf,
                                 match_pdf_visuals, render_visuals,
                                 review as review_stage, write_script)
@@ -28,6 +31,8 @@ REFERENCE_ROOT = Path("dev_samples/reference")
 LEGACY_REFERENCE_ROOT = Path("dev_examples/reference")
 REFERENCE_SAMPLE_PDF = REFERENCE_ROOT / "sample.pdf"
 LEGACY_REFERENCE_SAMPLE_PDF = LEGACY_REFERENCE_ROOT / "sample.pdf"
+REFERENCE_VISUAL_TUTORIAL_PDF = REFERENCE_ROOT / "sample_visual_tutorial.pdf"
+LEGACY_REFERENCE_VISUAL_TUTORIAL_PDF = LEGACY_REFERENCE_ROOT / "ultimate-guide-to-digital-photography-1.01-doithk.pdf"
 REFERENCE_SHORT_VIDEO = REFERENCE_ROOT / "notebooklm_short.mp4"
 REFERENCE_LONG_VIDEO = REFERENCE_ROOT / "notebooklm_long.mp4"
 REFERENCE_FRAMES_DIR = REFERENCE_ROOT / "frames"
@@ -38,6 +43,14 @@ def _optional_reference_sample_pdf() -> Path | None:
         return REFERENCE_SAMPLE_PDF
     if LEGACY_REFERENCE_SAMPLE_PDF.exists():
         return LEGACY_REFERENCE_SAMPLE_PDF
+    return None
+
+
+def _optional_visual_tutorial_pdf() -> Path | None:
+    if REFERENCE_VISUAL_TUTORIAL_PDF.exists():
+        return REFERENCE_VISUAL_TUTORIAL_PDF
+    if LEGACY_REFERENCE_VISUAL_TUTORIAL_PDF.exists():
+        return LEGACY_REFERENCE_VISUAL_TUTORIAL_PDF
     return None
 
 
@@ -78,6 +91,33 @@ def contract_pdf(tmp_path: Path) -> Path:
         page = doc.new_page(width=595, height=842)
         page.insert_text((50, 80), text, fontsize=12, fontname="china-s",
                           color=(0, 0, 0))
+    doc.save(pdf_path)
+    doc.close()
+    return pdf_path
+
+
+@pytest.fixture
+def visual_tutorial_pdf(tmp_path: Path) -> Path:
+    """Synthetic image-rich tutorial/manual PDF."""
+    pdf_path = tmp_path / "visual_tutorial.pdf"
+    img_paths = []
+    colors = [(220, 70, 70), (60, 150, 220), (60, 180, 90), (210, 160, 50)]
+    for idx, color in enumerate(colors, start=1):
+        img = tmp_path / f"tutorial_{idx}.png"
+        Image.new("RGB", (720, 420), color=color).save(img)
+        img_paths.append(img)
+    pages = [
+        ("第二單元：學習相機的各種拍攝模式\n這裡用範例照片說明 Auto、P、A、S、M 模式如何選擇。", img_paths[0], "模式轉盤範例圖"),
+        ("曝光鐵三角 - 光圈 / 快門 / ISO\n請看圖中的景深變化與快門速度差異，理解曝光如何連動。", img_paths[1], "曝光鐵三角示意圖"),
+        ("直方圖與曝光補償\n以下步驟示範如何看直方圖，再調整曝光補償。", img_paths[2], "直方圖截圖範例"),
+        ("白平衡色溫比較\n比較偏冷與偏暖的範例，可以更快理解白平衡如何影響顏色。", img_paths[3], "白平衡對比範例"),
+    ]
+    doc = fitz.open()
+    for text, image, caption in pages:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((50, 70), text, fontsize=14, fontname="china-s", color=(0, 0, 0))
+        page.insert_image(fitz.Rect(70, 180, 525, 445), filename=str(image))
+        page.insert_text((70, 468), caption, fontsize=12, fontname="china-s", color=(0, 0, 0))
     doc.save(pdf_path)
     doc.close()
     return pdf_path
@@ -352,3 +392,127 @@ def test_review_stage_produces_artefacts(
     assert (review_dir / "storyboard.html").exists()
     # Contact sheet should exist because visuals were rendered.
     assert (review_dir / "contact_sheet.jpg").exists()
+
+def test_visual_tutorial_uses_visual_first_source_anchors(
+    project_dir: Path, visual_tutorial_pdf: Path, sketchbook_cfg: dict,
+) -> None:
+    db, script_blob = _drive_through_script(
+        project_dir, visual_tutorial_pdf, sketchbook_cfg, target_minutes="5",
+    )
+    profile = DocProfile.model_validate(read_json(project_dir / "intermediate" / "doc_profile.json"))
+    assert profile.document_visual_rich is True
+    assert profile.visual_tutorial is True
+
+    visual_scenes = [
+        sc for sc in script_blob["scenes"]
+        if sc.get("scene_kind") in {
+            "source_visual_explainer", "figure_explainer",
+            "comparison_visual_card", "process_visual_card",
+            "source_table_explainer", "source_screenshot_explainer",
+        }
+    ]
+    assert visual_scenes, "image-rich tutorial did not produce visual-first scenes"
+    assert all(sc["visual_type"] != "generated_image" for sc in script_blob["scenes"])
+    assert all(sc.get("visual_anchor") for sc in visual_scenes)
+    assert all(sc.get("screen_plan") for sc in visual_scenes)
+    assert any(
+        sc.get("on_screen_text") and sc["on_screen_text"] != sc["narration_text_zh_tw"]
+        for sc in visual_scenes
+    )
+
+    graph = build_scene_graph.run(
+        project_root=project_dir, project_name=project_dir.name,
+        pdf_name=visual_tutorial_pdf.name, db=db, config=sketchbook_cfg,
+    )
+    anchored = [s for s in graph.scenes if s.visual_anchor is not None]
+    assert anchored
+    assert all(s.visual_source_paths for s in anchored)
+
+
+def test_visual_tutorial_review_reports_visual_first_metrics(
+    project_dir: Path, visual_tutorial_pdf: Path, sketchbook_cfg: dict,
+) -> None:
+    db, _ = _drive_through_script(
+        project_dir, visual_tutorial_pdf, sketchbook_cfg, target_minutes="3",
+    )
+    build_scene_graph.run(
+        project_root=project_dir, project_name=project_dir.name,
+        pdf_name=visual_tutorial_pdf.name, db=db, config=sketchbook_cfg,
+    )
+    render_visuals.run(project_root=project_dir, db=db, config=sketchbook_cfg,
+                       resume=False)
+    summary = review_stage.run(project_root=project_dir, db=db,
+                               config=sketchbook_cfg)
+    assert summary["document_visual_rich"] is True
+    assert summary["visual_first_scene_count"] > 0
+    assert summary["source_visual_scene_count"] > 0
+    assert summary["source_visuals_available"] > 0
+    assert summary["generated_image_used"] is False
+    assert summary["text_only_scene_count"] <= summary["source_visual_scene_count"]
+
+
+def test_review_warns_when_screen_text_duplicates_narration(tmp_path: Path) -> None:
+    repeated = "光圈控制景深，光圈控制景深，光圈控制景深"
+    source = tmp_path / "source.png"
+    Image.new("RGB", (640, 360), color=(200, 80, 80)).save(source)
+    scene = Scene(
+        scene_id="ch_001_sc_001", chapter_id="ch_001", title="光圈",
+        source_pages=[1], narration_text_zh_tw=repeated,
+        visual_prompt="source", visual_type=VisualType.sketchbook_card,
+        on_screen_text=repeated, estimated_duration_sec=24.0,
+        input_hash="hash", status=SceneStatus.visual_done,
+        visual_source_paths=[str(source)], scene_kind="source_visual_explainer",
+        visual_anchor=VisualAnchor(page=1, image_path=str(source), visual_role="source_photo"),
+        screen_plan=ScreenPlan(headline=repeated, callouts=[repeated],
+                               layout_hint="source_visual_explainer"),
+    )
+    graph = SceneGraph(project="t", target_minutes=1.0, scenes=[scene])
+    page = PdfPage(page=1, text=repeated, cjk_char_count=len(repeated), headings=["光圈"] )
+    chunk = PdfChunk(chunk_id="c", start_page=1, end_page=1, text=repeated,
+                     cjk_char_count=len(repeated), headings=["光圈"])
+    sources = ChunkedSources(
+        source_pdf="x.pdf", pdf_sha256="0" * 64, page_count=1,
+        cjk_char_count=len(repeated), image_count=1, heading_count=1,
+        estimated_density=len(repeated), pages=[page], chunks=[chunk],
+        images=[],
+        visual_inventory=[VisualCandidate(
+            candidate_id="v", page=1, image_path=str(source),
+            visual_role="source_photo", salience_score=4.0, likely_useful=True,
+        )],
+    )
+    profile = DocProfile(doc_kind=DocKind.manual, document_visual_rich=True,
+                         visual_tutorial=True)
+    metrics = review_stage._visual_first_metrics(graph, sources, profile)
+    assert any(
+        f["code"] == "narration_screen_overlap_too_high"
+        for f in metrics["findings"]
+    )
+
+
+def test_reference_visual_tutorial_smoke(
+    tmp_path: Path, sketchbook_cfg: dict,
+) -> None:
+    sample = _optional_visual_tutorial_pdf()
+    if sample is None:
+        pytest.skip("optional visual tutorial reference PDF not present")
+    project = tmp_path / "sample_visual_tutorial"
+    project.mkdir()
+    _db, script_blob = _drive_through_script(
+        project, sample, sketchbook_cfg, target_minutes="5",
+    )
+    profile = DocProfile.model_validate(read_json(project / "intermediate" / "doc_profile.json"))
+    assert profile.document_visual_rich is True
+    assert profile.doc_kind in {DocKind.manual, DocKind.slides}
+    visual_first = [
+        sc for sc in script_blob["scenes"]
+        if sc.get("visual_anchor") and sc.get("scene_kind") != "section_intro"
+    ]
+    assert visual_first
+    assert all(sc["visual_type"] != "generated_image" for sc in script_blob["scenes"])
+    text_only = [
+        sc for sc in script_blob["scenes"]
+        if not sc.get("visual_anchor")
+        and sc.get("scene_kind") not in {"cover", "section_intro", "recap_card"}
+    ]
+    assert len(text_only) <= len(visual_first)
+

@@ -33,7 +33,7 @@ pip install -e ".[ollama,xtts,ocr,test]"
 
 ## 預設輸出
 
-預設模式會自動判斷文件類型並選 storyboard：
+預設模式會自動判斷文件類型並選 storyboard；使用者不需要選 mode、style、depth、renderer、VLM、SDXL 或硬體 profile：
 
 | 文件類型 | 常見卡片 |
 |---|---|
@@ -43,7 +43,9 @@ pip install -e ".[ollama,xtts,ocr,test]"
 | 報告 | 摘要、關鍵指標、趨勢、風險、建議、回顧 |
 | 投影片 | 段落總覽、重點摘錄、回顧 |
 
-所有 factual scene 會盡量帶 `source_pages`、`evidence_spans` 與 `facts`。若重要數字、日期、費用、百分比、期限、風險或義務無法被來源支持，預設會修復、移除該場景，或清楚失敗。
+對合約、表單、政策與商務文件，paperreel 會保留時間線、表格、風險卡、do/don't 與檢查清單這類 source-grounded 卡片。對影像豐富的教學書、操作手冊、tutorial 或 slide-like PDF，paperreel 會自動改成來源視覺 walkthrough：優先顯示 PDF 自己的照片、圖解、表格、截圖或有意義的頁面裁切，旁白解釋畫面，卡片文字只保留短 headline 與 callout。
+
+所有 factual scene 會盡量帶 `source_pages`、`evidence_spans` 與 `facts`；visual-first scene 會額外帶 `visual_anchor` 與 `screen_plan`。若重要數字、日期、費用、百分比、期限、風險或義務無法被來源支持，預設會修復、移除該場景，或清楚失敗。
 
 ## 複查輸出
 
@@ -59,7 +61,7 @@ paperreel review --project runs/demo
 |---|---|
 | `outputs/review/contact_sheet.jpg` | 全部卡片縮圖牆 |
 | `outputs/review/storyboard.html` | 每張卡片、旁白、facts、來源摘錄 |
-| `outputs/review/semantic_quality.json` | 時長、evidence、生成圖片外洩、卡片密度、來源覆蓋、文件類型高優先事實檢查 |
+| `outputs/review/semantic_quality.json` | 時長、evidence、生成圖片外洩、卡片密度、來源覆蓋、visual-first 覆蓋率、screen/narration overlap、文件類型高優先事實檢查 |
 
 主要影片與字幕在：
 
@@ -81,7 +83,7 @@ export COQUI_TOS_AGREED=1
 
 Ollama 主要用於 outline 摘要；explainer 腳本與視覺卡片仍以 PDF 抽取 facts/evidence 為核心。若 Ollama 暫時不可用，explainer plan 會退回 deterministic outline。XTTS 用於語音合成；`tts.device: auto` 會自動使用 CUDA 或 CPU。預設語速略低於 XTTS 原速，避免繁中導讀聽起來太趕。
 
-高階硬體可以改用更大的本機模型、較大的 context、較快的 TTS/OCR，或自行開啟進階 review；這些都不是正常路徑必需。
+高階硬體可以改用更大的本機模型、較大的 context、較快的 TTS/OCR，或自行開啟進階 review；這些都不是正常路徑必需。`highend_sketchbook` 只是一個進階範例，可使用如 `qwen3:30b` 或 `qwen2.5:32b-instruct` 搭配較大 context。
 
 ## 改善中文旁白聲音
 
@@ -133,13 +135,14 @@ pytest -q
 
 測試不需要 GPU、網路、雲端 API、SDXL 或 VLM；provider 會被測試替身取代。
 
-可選的本機 regression / reference 檔案放在 `dev_samples/reference/`：
+可選的本機 regression / reference 檔案放在 `dev_samples/reference/`；舊本機開發資料夾 `dev_examples/reference/` 只作為 legacy fallback：
 
 | 路徑 | 用途 |
 |---|---|
 | `dev_samples/reference/sample.pdf` | 合約/表單類 PDF smoke regression |
+| `dev_samples/reference/sample_visual_tutorial.pdf` | 影像豐富教學 PDF smoke regression（若本機存在） |
 | `dev_samples/reference/notebooklm_short.mp4` | 視覺節奏與資訊密度參考，不複製品牌或 UI |
 | `dev_samples/reference/notebooklm_long.mp4` | 較長篇 pacing 參考，不是正常使用依賴 |
 | `dev_samples/reference/frames/` | MP4 無法讀取時的備用影格參考 |
 
-這些檔案不是一般使用者執行 `paperreel input.pdf --project runs/demo --target-minutes 5` 的必要條件。測試會優先使用 `dev_samples/reference/sample.pdf`；若本機仍有舊的 `dev_examples/reference/sample.pdf`，只作為 legacy fallback。
+這些檔案不是一般使用者執行 `paperreel input.pdf --project runs/demo --target-minutes 5` 的必要條件。測試會優先使用 `dev_samples/reference/`；若本機仍有舊的 `dev_examples/reference/`，只作為 legacy fallback。參考影片只用來觀察「來源視覺 + 旁白解釋」的高層節奏與視覺層級，不複製品牌、UI、水印、聲音或動畫。

@@ -20,9 +20,10 @@ doc_explainer:
   # the actual content. Off by default for this style; only flip on
   # if you have a custom prompt set you trust to stay neutral.
   allow_generated_images: false
-  # Skip auto-matching extracted PDF figures to scenes. source_crop
-  # scenes are optional; if no crop image exists, the renderer shows a
-  # source_quote_card with the evidence quote and page number instead.
+  # Keep the generic post-planning PDF figure matcher off in document_explainer
+  # so contract/form timeline/table/checklist cards are not replaced by
+  # arbitrary nearby images. Image-rich tutorials/manuals still select source
+  # visual anchors during planning from the ingest visual_inventory.
   auto_match_pdf_figures: false
   # Heuristic document classifier; optional LLM refinement is gated
   # behind `use_llm_refinement` and stays off by default for speed.
